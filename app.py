@@ -243,8 +243,9 @@ class LyricsSrtApp(tk.Tk):
                 model = WhisperModel(model_name, device="cuda", compute_type="float16")
                 self.events.put(("status", "已使用 NVIDIA GPU 加速。"))
             except Exception as gpu_error:
-                if device_choice == "GPU" and "使用者選擇" not in str(gpu_error):
-                    # 使用者明確選 GPU 時，先自動補齊 PyPI 可提供的 CUDA DLL，再重試一次。
+                dll_missing = any(word in str(gpu_error).lower() for word in ("cublas", "cudnn", ".dll", "library"))
+                if (device_choice == "GPU" or dll_missing) and "使用者選擇" not in str(gpu_error):
+                    # CUDA DLL 缺少時，先自動補齊 PyPI 可提供的執行庫，再重試一次。
                     self.events.put(("status", "GPU DLL 不完整，正在自動下載 NVIDIA 執行庫…"))
                     install_gpu_runtime(lambda text: self.events.put(("status", text)))
                     model = WhisperModel(model_name, device="cuda", compute_type="float16")

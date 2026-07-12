@@ -17,7 +17,7 @@ Windows 使用者可直接雙擊 `run.bat`，它會建立專案專用的 `.venv`
 
 ## GPU（選用）
 
-預設是「自動（GPU 優先）」。程式會先嘗試 NVIDIA GPU；無法使用時會自動回退 CPU，不會中斷分析。選擇「GPU」時，若發現 CUDA 12 的 `cublas` / `cudnn` DLL 缺少，會自動從 PyPI 安裝對應 NVIDIA 執行庫並重試。
+預設是「自動（GPU 優先）」。程式會先嘗試 NVIDIA GPU；若發現 CUDA 12 的 `cublas` / `cudnn` DLL 缺少，會自動從 PyPI 安裝對應 NVIDIA 執行庫並重試。其他 GPU 問題則自動回退 CPU，不會中斷分析。
 
 若要發佈免安裝 Python 的 Windows 版本，在已完成首次啟動後執行 `build_exe.bat`；輸出於 `dist\LyricsSrtGenerator\`。請一併發佈整個資料夾，而不是只發佈 EXE。
 
