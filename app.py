@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import copy
+import difflib
 import os
 import queue
+import re
 import subprocess
 import threading
 import tkinter as tk
@@ -19,6 +21,7 @@ APP_TITLE = "歌詞 SRT 產生器"
 MUSIC_KIND = "音樂"
 LYRIC_KIND = "歌詞"
 SUPPORTED_AUDIO = [("音檔", "*.mp3 *.wav *.m4a *.flac *.aac *.ogg"), ("所有檔案", "*.*")]
+SUPPORTED_LYRICS = [("歌詞文字檔", "*.txt *.lrc"), ("所有檔案", "*.*")]
 
 
 @dataclass
@@ -93,6 +96,61 @@ def normalize_lyrics(raw_segments: Iterable[object]) -> list[Segment]:
     return result
 
 
+def read_lyric_lines(path: Path) -> list[str]:
+    """讀取一般文字或 LRC 歌詞；LRC 的既有時間標籤會被忽略。"""
+    last_error: UnicodeError | None = None
+    for encoding in ("utf-8-sig", "utf-8", "utf-16", "cp950"):
+        try:
+            lines = []
+            for raw_line in path.read_text(encoding=encoding).splitlines():
+                line = re.sub(r"^(?:\[\d{1,2}:\d{2}(?:\.\d{1,3})?\])+", "", raw_line).strip()
+                if line and not re.fullmatch(r"\[[A-Za-z]+:.*\]", line):
+                    lines.append(line)
+            return lines
+        except UnicodeError as exc:
+            last_error = exc
+    raise ValueError("無法讀取歌詞檔，請另存為 UTF-8 純文字檔。") from last_error
+
+
+def _comparison_text(value: str) -> str:
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", value.lower())
+
+
+def align_reference_lyrics(reference_lines: list[str], recognized: list[Segment], duration: float) -> list[Segment]:
+    """用 AI 聽到的時間錨點，依序套用使用者提供的原始歌詞文字。"""
+    if not reference_lines:
+        return recognized
+    if not recognized:
+        step = duration / len(reference_lines) if reference_lines and duration else 1.0
+        return [Segment(i * step, min(duration, (i + 1) * step), LYRIC_KIND, text) for i, text in enumerate(reference_lines)]
+
+    result: list[Segment] = []
+    anchor = 0
+    for line_index, line in enumerate(reference_lines):
+        remaining_lines = len(reference_lines) - line_index
+        remaining_anchors = len(recognized) - anchor
+        if remaining_anchors <= 0:
+            previous_end = result[-1].end if result else 0.0
+            step = max(0.05, (duration - previous_end) / remaining_lines)
+            result.append(Segment(previous_end, min(duration, previous_end + step), LYRIC_KIND, line))
+            continue
+        # 每句最多合併四個 Whisper 片段；保留足夠片段給後面的歌詞行。
+        max_end = min(len(recognized) - (remaining_lines - 1), anchor + 4)
+        wanted = _comparison_text(line)
+        best_end, best_score = anchor + 1, -1.0
+        for end in range(anchor + 1, max_end + 1):
+            heard = _comparison_text("".join(item.text for item in recognized[anchor:end]))
+            score = difflib.SequenceMatcher(None, wanted, heard).ratio() - 0.025 * (end - anchor - 1)
+            if score > best_score:
+                best_end, best_score = end, score
+        result.append(Segment(recognized[anchor].start, recognized[best_end - 1].end, LYRIC_KIND, line))
+        anchor = best_end
+    # 尚未配到的 ASR 尾段仍屬於最後一句，避免尾字被截短。
+    if anchor < len(recognized) and result:
+        result[-1].end = max(result[-1].end, recognized[-1].end)
+    return result
+
+
 def add_music_markers(lyrics: list[Segment], duration: float, min_gap: float) -> list[Segment]:
     """以每句歌詞的前後空檔建立前奏、間奏、尾奏。"""
     if not lyrics:
@@ -119,6 +177,7 @@ class LyricsSrtApp(tk.Tk):
         self.minsize(860, 540)
         self.audio_path: Path | None = None
         self.duration = 0.0
+        self.reference_lyrics: list[str] = []
         self.segments: list[Segment] = []
         self.undo_stack: list[list[Segment]] = []
         self.redo_stack: list[list[Segment]] = []
@@ -145,6 +204,9 @@ class LyricsSrtApp(tk.Tk):
         ttk.Label(top, textvariable=self.file_var, anchor="w").grid(row=0, column=1, sticky="ew")
         self.duration_var = tk.StringVar(value="長度：--")
         ttk.Label(top, textvariable=self.duration_var).grid(row=0, column=2, padx=(10, 0))
+        ttk.Button(top, text="匯入歌詞檔", command=self.import_lyrics).grid(row=0, column=3, padx=(16, 8))
+        self.lyrics_file_var = tk.StringVar(value="未使用參考歌詞")
+        ttk.Label(top, textvariable=self.lyrics_file_var, foreground="#346b39").grid(row=0, column=4, sticky="w")
 
         controls = ttk.LabelFrame(self, text="本機 AI 分析", padding=10)
         controls.grid(row=1, column=0, sticky="ew", padx=14, pady=6)
@@ -165,17 +227,6 @@ class LyricsSrtApp(tk.Tk):
         self.analyze_btn.grid(row=0, column=8, padx=(14, 0))
         self.progress_var = tk.StringVar(value="等待匯入音檔")
         ttk.Label(controls, textvariable=self.progress_var, foreground="#245a9c").grid(row=1, column=0, columnspan=10, sticky="w", pady=(8, 0))
-
-    def _check_dependencies_async(self) -> None:
-        self.progress_var.set("正在檢查必要套件…")
-        threading.Thread(target=self._ensure_dependencies, daemon=True).start()
-
-    def _ensure_dependencies(self) -> None:
-        try:
-            ensure_required_packages(lambda text: self.events.put(("status", text)))
-            self.events.put(("ready", None))
-        except Exception as exc:
-            self.events.put(("dependency_error", str(exc)))
 
         body = ttk.Frame(self, padding=(14, 6))
         body.grid(row=2, column=0, sticky="nsew")
@@ -201,6 +252,17 @@ class LyricsSrtApp(tk.Tk):
         ttk.Label(bottom, text="雙擊欄位可修改；時間格式：00:00:00:00", foreground="#555").pack(side="left", padx=18)
         ttk.Button(bottom, text="匯出 SRT", command=self.export_srt).pack(side="right")
 
+    def _check_dependencies_async(self) -> None:
+        self.progress_var.set("正在檢查必要套件…")
+        threading.Thread(target=self._ensure_dependencies, daemon=True).start()
+
+    def _ensure_dependencies(self) -> None:
+        try:
+            ensure_required_packages(lambda text: self.events.put(("status", text)))
+            self.events.put(("ready", None))
+        except Exception as exc:
+            self.events.put(("dependency_error", str(exc)))
+
     def import_audio(self) -> None:
         selected = filedialog.askopenfilename(title="選擇音檔", filetypes=SUPPORTED_AUDIO)
         if not selected:
@@ -217,6 +279,21 @@ class LyricsSrtApp(tk.Tk):
         self.progress_var.set("已匯入，請選擇模型後開始分析。")
         self.refresh_tree()
 
+    def import_lyrics(self) -> None:
+        selected = filedialog.askopenfilename(title="選擇歌詞文字檔", filetypes=SUPPORTED_LYRICS)
+        if not selected:
+            return
+        try:
+            self.reference_lyrics = read_lyric_lines(Path(selected))
+        except (OSError, ValueError) as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
+        if not self.reference_lyrics:
+            messagebox.showerror(APP_TITLE, "歌詞檔沒有可用的文字行。請每句歌詞各佔一行。")
+            return
+        self.lyrics_file_var.set(f"參考歌詞：{Path(selected).name}（{len(self.reference_lyrics)} 句）")
+        self.progress_var.set("已載入參考歌詞。AI 會只取得時間，SRT 將使用此歌詞原文。")
+
     def analyze(self) -> None:
         if not self.audio_path:
             messagebox.showinfo(APP_TITLE, "請先匯入音檔。")
@@ -228,9 +305,10 @@ class LyricsSrtApp(tk.Tk):
             return
         self.analyze_btn.configure(state="disabled")
         self.progress_var.set("正在載入本機模型並轉錄，首次使用會下載模型…")
-        threading.Thread(target=self._run_transcription, args=(self.audio_path, self.model_var.get(), self.language_var.get(), self.device_var.get(), min_gap), daemon=True).start()
+        reference = list(self.reference_lyrics)
+        threading.Thread(target=self._run_transcription, args=(self.audio_path, self.model_var.get(), self.language_var.get(), self.device_var.get(), min_gap, reference), daemon=True).start()
 
-    def _run_transcription(self, path: Path, model_name: str, language: str, device_choice: str, min_gap: float) -> None:
+    def _run_transcription(self, path: Path, model_name: str, language: str, device_choice: str, min_gap: float, reference: list[str]) -> None:
         try:
             ensure_required_packages(lambda text: self.events.put(("status", text)))
             from faster_whisper import WhisperModel
@@ -256,7 +334,10 @@ class LyricsSrtApp(tk.Tk):
                     self.events.put(("status", f"GPU 暫時不可用，已改用 CPU：{gpu_error}"))
                     model = WhisperModel(model_name, device="cpu", compute_type="int8")
             raw, _ = model.transcribe(str(path), language=None if language == "auto" else language, vad_filter=True, condition_on_previous_text=False, beam_size=5)
-            lyrics = normalize_lyrics(list(raw))
+            recognized = normalize_lyrics(list(raw))
+            lyrics = align_reference_lyrics(reference, recognized, self.duration) if reference else recognized
+            if reference:
+                self.events.put(("status", f"已以 {len(reference)} 句參考歌詞取代 AI 文字，保留 AI 時間範圍。"))
             self.events.put(("done", add_music_markers(lyrics, self.duration, min_gap)))
         except Exception as exc:
             self.events.put(("error", str(exc)))
