@@ -26,6 +26,33 @@ LYRIC_KIND = "歌詞"
 SUPPORTED_AUDIO = [("音檔", "*.mp3 *.wav *.m4a *.flac *.aac *.ogg"), ("所有檔案", "*.*")]
 SUPPORTED_LYRICS = [("歌詞文字檔", "*.txt *.lrc"), ("所有檔案", "*.*")]
 
+# 深色介面色票，比照主流影音剪輯工具（Premiere／DaVinci）的暗色風格。
+DARK_BG = "#1e1f22"
+DARK_PANEL = "#26282c"
+DARK_FIELD = "#303338"
+DARK_BORDER = "#3f4248"
+DARK_FG = "#e6e6e6"
+DARK_MUTED_FG = "#9aa0a6"
+DARK_ACCENT = "#4c8bf5"
+WAVE_CANVAS_BG = "#141518"
+WAVE_RULER_BG = "#202226"
+WAVE_RULER_TICK = "#3a3d42"
+WAVE_RULER_TEXT = "#aeb4bd"
+WAVE_EMPTY_LINE = "#43474e"
+WAVE_FILL = "#4f7fb8"
+WAVE_MID_LINE = "#345d8c"
+WAVE_LABEL_FG = "#f5f6f8"
+LYRIC_COLOR = "#5b9bd9"
+LYRIC_OUTLINE = "#3d6fa0"
+MUSIC_COLOR = "#3fa06a"
+MUSIC_OUTLINE = "#2c7a4f"
+DELETED_COLOR = "#6b6f76"
+DELETED_OUTLINE = "#55585e"
+SELECTED_OUTLINE = "#ff8a4c"
+START_HANDLE_COLOR = "#37d67a"
+END_HANDLE_COLOR = "#ff5c5c"
+PLAYHEAD_COLOR = "#ff4d4f"
+
 
 @dataclass
 class Segment:
@@ -238,7 +265,7 @@ class WaveformView(ttk.Frame):
 
         toolbar = ttk.Frame(self)
         toolbar.pack(fill="x")
-        ttk.Label(toolbar, text="拖曳邊界調整起訖時間；點聲波句子播放；點時間尺跳轉；滾輪縮放；按住中鍵拖曳平移", foreground="#666").pack(side="left")
+        ttk.Label(toolbar, text="拖曳邊界調整起訖時間；點聲波句子播放；點時間尺跳轉；滾輪縮放；按住中鍵拖曳平移", foreground=DARK_MUTED_FG).pack(side="left")
         ttk.Button(toolbar, text="－", width=3, command=lambda: self.zoom(1 / 1.5)).pack(side="right")
         ttk.Button(toolbar, text="符合視窗", command=self.fit_to_window).pack(side="right", padx=4)
         ttk.Button(toolbar, text="＋", width=3, command=lambda: self.zoom(1.5)).pack(side="right")
@@ -247,7 +274,7 @@ class WaveformView(ttk.Frame):
         canvas_area.pack(fill="both", expand=True)
         canvas_area.columnconfigure(0, weight=1)
         canvas_area.rowconfigure(0, weight=1)
-        self.canvas = tk.Canvas(canvas_area, height=self.RULER_H + self.WAVE_H, background="#eef1f5", highlightthickness=0)
+        self.canvas = tk.Canvas(canvas_area, height=self.RULER_H + self.WAVE_H, background=WAVE_CANVAS_BG, highlightthickness=0)
         self.canvas.grid(row=0, column=0, sticky="ew")
         hscroll = ttk.Scrollbar(canvas_area, orient="horizontal", command=self.canvas.xview)
         hscroll.grid(row=1, column=0, sticky="ew")
@@ -312,7 +339,7 @@ class WaveformView(ttk.Frame):
         if self.canvas.find_withtag("playhead"):
             self.canvas.coords("playhead", x, 0, x, total_h)
         else:
-            self.canvas.create_line(x, 0, x, total_h, fill="#e3342f", width=2, tags=("playhead",))
+            self.canvas.create_line(x, 0, x, total_h, fill=PLAYHEAD_COLOR, width=2, tags=("playhead",))
         if follow:
             self.reveal_time(self.playhead)
 
@@ -357,17 +384,17 @@ class WaveformView(ttk.Frame):
         self._draw_ruler(width, height)
         self._draw_waveform(width)
         self._draw_segments()
-        self.canvas.create_line(self._time_to_x(self.playhead), 0, self._time_to_x(self.playhead), height, fill="#e3342f", width=2, tags=("playhead",))
+        self.canvas.create_line(self._time_to_x(self.playhead), 0, self._time_to_x(self.playhead), height, fill=PLAYHEAD_COLOR, width=2, tags=("playhead",))
 
     def _draw_ruler(self, width: int, height: int) -> None:
-        self.canvas.create_rectangle(0, 0, width, self.RULER_H, fill="#d8dee6", width=0)
+        self.canvas.create_rectangle(0, 0, width, self.RULER_H, fill=WAVE_RULER_BG, width=0)
         interval = self._nice_interval()
         steps = int(self.duration / interval) + 2 if interval else 0
         for i in range(steps):
             t = i * interval
             x = self._time_to_x(t)
-            self.canvas.create_line(x, 0, x, height, fill="#c3ccd6")
-            self.canvas.create_text(x + 3, self.RULER_H / 2, text=format_timecode(t)[:8], anchor="w", font=("Consolas", 8), fill="#3c4550")
+            self.canvas.create_line(x, 0, x, height, fill=WAVE_RULER_TICK)
+            self.canvas.create_text(x + 3, self.RULER_H / 2, text=format_timecode(t)[:8], anchor="w", font=("Consolas", 8), fill=WAVE_RULER_TEXT)
 
     def _draw_waveform(self, width: int) -> None:
         top = self.RULER_H
@@ -375,13 +402,13 @@ class WaveformView(ttk.Frame):
         half = self.WAVE_H / 2 - 4
         columns = max(1, min(width, 4000))
         if self.samples is None or len(self.samples) == 0 or width <= 0:
-            self.canvas.create_line(0, mid, width, mid, fill="#b7c3d1")
+            self.canvas.create_line(0, mid, width, mid, fill=WAVE_EMPTY_LINE)
             return
         import numpy as np
         bucket = max(1, len(self.samples) // columns)
         usable = (len(self.samples) // bucket) * bucket
         if usable == 0:
-            self.canvas.create_line(0, mid, width, mid, fill="#b7c3d1")
+            self.canvas.create_line(0, mid, width, mid, fill=WAVE_EMPTY_LINE)
             return
         peaks = np.abs(self.samples[:usable].reshape(-1, bucket)).max(axis=1)
         xs = np.linspace(0, width, num=len(peaks), endpoint=False)
@@ -392,12 +419,10 @@ class WaveformView(ttk.Frame):
             polygon.extend((x, y))
         for x, y in reversed(bottom_points):
             polygon.extend((x, y))
-        self.canvas.create_polygon(*polygon, fill="#7fa8e8", outline="", width=0)
-        self.canvas.create_line(0, mid, width, mid, fill="#4d75b8")
+        self.canvas.create_polygon(*polygon, fill=WAVE_FILL, outline="", width=0)
+        self.canvas.create_line(0, mid, width, mid, fill=WAVE_MID_LINE)
 
     GAP_PX = 2
-    START_COLOR = "#2f9e44"
-    END_COLOR = "#e03131"
 
     def _draw_segments(self) -> None:
         top = self.RULER_H
@@ -406,22 +431,22 @@ class WaveformView(ttk.Frame):
             x0 = self._time_to_x(segment.start)
             x1 = self._time_to_x(segment.end)
             if segment.deleted:
-                fill, outline = "#999999", "#777777"
+                fill, outline = DELETED_COLOR, DELETED_OUTLINE
             elif segment.kind == MUSIC_KIND:
-                fill, outline = "#3f9142", "#2c6b30"
+                fill, outline = MUSIC_COLOR, MUSIC_OUTLINE
             else:
-                fill, outline = "#2f6fb3", "#1f4d80"
+                fill, outline = LYRIC_COLOR, LYRIC_OUTLINE
             width_px = 2 if index == self.selected_index else 1
-            outline_color = "#e0532c" if index == self.selected_index else outline
+            outline_color = SELECTED_OUTLINE if index == self.selected_index else outline
             # 兩句緊鄰時保留一點視覺間隙，避免色塊黏在一起、難以分辨與拖曳。
             mid = (x0 + x1) / 2
             fill_left = min(x0 + self.GAP_PX, mid)
             fill_right = max(x1 - self.GAP_PX, mid)
-            self.canvas.create_rectangle(fill_left, top, fill_right, bottom, fill=fill, stipple="gray25", outline=outline_color, width=width_px, tags=("segment", f"seg:{index}"))
+            self.canvas.create_rectangle(fill_left, top, fill_right, bottom, fill=fill, stipple="gray50", outline=outline_color, width=width_px, tags=("segment", f"seg:{index}"))
             label = segment.text if len(segment.text) <= 40 else segment.text[:39] + "…"
-            self.canvas.create_text(fill_left + 4, top + 4, text=label, anchor="nw", font=("Microsoft JhengHei UI", 8), fill="#10233d", tags=("segment_label",))
-            self.canvas.create_line(x0, top, x0, bottom, fill=self.START_COLOR, width=2, tags=("handle", f"handle:{index}:start"))
-            self.canvas.create_line(x1, top, x1, bottom, fill=self.END_COLOR, width=2, tags=("handle", f"handle:{index}:end"))
+            self.canvas.create_text(fill_left + 4, top + 4, text=label, anchor="nw", font=("Microsoft JhengHei UI", 8), fill=WAVE_LABEL_FG, tags=("segment_label",))
+            self.canvas.create_line(x0, top, x0, bottom, fill=START_HANDLE_COLOR, width=2, tags=("handle", f"handle:{index}:start"))
+            self.canvas.create_line(x1, top, x1, bottom, fill=END_HANDLE_COLOR, width=2, tags=("handle", f"handle:{index}:end"))
 
     def _find_handle(self, x: float, y: float) -> tuple[int, str] | None:
         best = None
@@ -531,20 +556,65 @@ class LyricsSrtApp(tk.Tk):
         self._ffplay: str | None = None
         self._audio_process: subprocess.Popen[str] | None = None
         self._build_ui()
+        self._apply_dark_titlebar()
         self.bind_all("<Control-z>", self.undo)
         self.bind_all("<Control-y>", self.redo)
-        # 空白鍵＝播放／暫停；先阻斷按鈕與勾選框的預設空白鍵行為，避免誤觸到焦點所在的按鈕。
-        self.bind_class("TButton", "<space>", lambda _e: "break")
-        self.bind_class("TCheckbutton", "<space>", lambda _e: "break")
+        # 空白鍵＝播放／暫停；取代按鈕與勾選框原本「space＝按下」的預設行為，
+        # 但不可回傳 "break"，否則會連 bindtags 後面的 all（全域）都一併擋掉，
+        # 導致焦點停在任何按鈕上時（點擊按鈕後 ttk 會自動把焦點留在該按鈕）空白鍵完全沒反應。
+        self.bind_class("TButton", "<space>", lambda _e: None)
+        self.bind_class("TCheckbutton", "<space>", lambda _e: None)
         self.bind_all("<space>", self._on_space_key)
         self.after(120, self._poll_events)
         self.after(250, self._check_dependencies_async)
         self.after(75, self._update_playback)
 
+    def _apply_dark_titlebar(self) -> None:
+        """Windows 10/11 可讓標題列也套用深色；不支援的系統會靜默略過。"""
+        try:
+            import ctypes
+            self.update_idletasks()
+            hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+            value = ctypes.c_int(1)
+            for attribute in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE：新舊 Windows 版本編號不同
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attribute, ctypes.byref(value), ctypes.sizeof(value))
+        except Exception:
+            pass
+
     def _build_ui(self) -> None:
         style = ttk.Style(self)
-        style.configure("Treeview", rowheight=28, font=("Microsoft JhengHei UI", 10))
-        style.configure("Treeview.Heading", font=("Microsoft JhengHei UI", 10, "bold"))
+        # "clam" 是唯一能讓 ttk 元件完全套用自訂顏色的內建主題；
+        # 預設的 "vista" 主題會畫原生 Windows 控件，大多顏色設定會被忽略。
+        style.theme_use("clam")
+        self.configure(background=DARK_BG)
+        style.configure(".", background=DARK_BG, foreground=DARK_FG, fieldbackground=DARK_FIELD,
+                         bordercolor=DARK_BORDER, darkcolor=DARK_BG, lightcolor=DARK_BG,
+                         troughcolor=DARK_FIELD, insertcolor=DARK_FG, font=("Microsoft JhengHei UI", 10))
+        style.configure("TFrame", background=DARK_BG)
+        style.configure("TLabelframe", background=DARK_BG, foreground=DARK_FG, bordercolor=DARK_BORDER)
+        style.configure("TLabelframe.Label", background=DARK_BG, foreground=DARK_FG)
+        style.configure("TLabel", background=DARK_BG, foreground=DARK_FG)
+        style.configure("TButton", background=DARK_PANEL, foreground=DARK_FG, bordercolor=DARK_BORDER, focuscolor=DARK_ACCENT, padding=4)
+        style.map("TButton", background=[("active", "#35383e"), ("pressed", "#2a2c30")], foreground=[("disabled", DARK_MUTED_FG)])
+        style.configure("TCheckbutton", background=DARK_BG, foreground=DARK_FG)
+        style.map("TCheckbutton", background=[("active", DARK_BG)])
+        style.configure("TEntry", fieldbackground=DARK_FIELD, foreground=DARK_FG, insertcolor=DARK_FG, bordercolor=DARK_BORDER)
+        style.configure("TCombobox", fieldbackground=DARK_FIELD, foreground=DARK_FG, background=DARK_FIELD, arrowcolor=DARK_FG, bordercolor=DARK_BORDER)
+        style.map("TCombobox", fieldbackground=[("readonly", DARK_FIELD)], foreground=[("readonly", DARK_FG)])
+        style.configure("Vertical.TScrollbar", background=DARK_PANEL, troughcolor=DARK_BG, bordercolor=DARK_BORDER, arrowcolor=DARK_FG)
+        style.configure("Horizontal.TScrollbar", background=DARK_PANEL, troughcolor=DARK_BG, bordercolor=DARK_BORDER, arrowcolor=DARK_FG)
+        style.configure("Horizontal.TScale", background=DARK_BG, troughcolor=DARK_FIELD)
+        style.configure("TProgressbar", background=DARK_ACCENT, troughcolor=DARK_FIELD, bordercolor=DARK_BORDER)
+        style.configure("Treeview", background=DARK_FIELD, fieldbackground=DARK_FIELD, foreground=DARK_FG,
+                         rowheight=28, font=("Microsoft JhengHei UI", 10), bordercolor=DARK_BORDER)
+        style.configure("Treeview.Heading", background=DARK_PANEL, foreground=DARK_FG, font=("Microsoft JhengHei UI", 10, "bold"))
+        style.map("Treeview.Heading", background=[("active", "#35383e")])
+        style.map("Treeview", background=[("selected", DARK_ACCENT)], foreground=[("selected", "#ffffff")])
+        # ttk Combobox 的下拉清單是原生 tk Listbox，要另外用 option_add 上色。
+        self.option_add("*TCombobox*Listbox.background", DARK_FIELD)
+        self.option_add("*TCombobox*Listbox.foreground", DARK_FG)
+        self.option_add("*TCombobox*Listbox.selectBackground", DARK_ACCENT)
+        self.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
         self.columnconfigure(0, weight=1)
         self.rowconfigure(3, weight=1)
 
@@ -558,7 +628,7 @@ class LyricsSrtApp(tk.Tk):
         ttk.Label(top, textvariable=self.duration_var).grid(row=0, column=2, padx=(10, 0))
         ttk.Button(top, text="匯入歌詞檔", command=self.import_lyrics).grid(row=0, column=3, padx=(16, 8))
         self.lyrics_file_var = tk.StringVar(value="未使用參考歌詞")
-        ttk.Label(top, textvariable=self.lyrics_file_var, foreground="#346b39").grid(row=0, column=4, sticky="w")
+        ttk.Label(top, textvariable=self.lyrics_file_var, foreground=MUSIC_COLOR).grid(row=0, column=4, sticky="w")
 
         controls = ttk.LabelFrame(self, text="本機 AI 分析", padding=10)
         controls.grid(row=1, column=0, sticky="ew", padx=14, pady=6)
@@ -585,7 +655,7 @@ class LyricsSrtApp(tk.Tk):
         status_row = ttk.Frame(controls)
         status_row.grid(row=2, column=0, columnspan=10, sticky="ew", pady=(8, 0))
         status_row.columnconfigure(0, weight=1)
-        ttk.Label(status_row, textvariable=self.progress_var, foreground="#245a9c").grid(row=0, column=0, sticky="w")
+        ttk.Label(status_row, textvariable=self.progress_var, foreground=DARK_ACCENT).grid(row=0, column=0, sticky="w")
         self.progress_bar = ttk.Progressbar(status_row, mode="indeterminate", length=220)
         self.progress_bar.grid(row=0, column=1, sticky="e", padx=(12, 0))
 
@@ -625,7 +695,7 @@ class LyricsSrtApp(tk.Tk):
         ttk.Button(bottom, text="刪除／還原", command=self.toggle_deleted).pack(side="left", padx=6)
         ttk.Button(bottom, text="復原", command=self.undo).pack(side="left", padx=(18, 0))
         ttk.Button(bottom, text="重做", command=self.redo).pack(side="left", padx=6)
-        ttk.Label(bottom, text="雙擊欄位可修改；時間格式：00:00:00:00", foreground="#555").pack(side="left", padx=18)
+        ttk.Label(bottom, text="雙擊欄位可修改；時間格式：00:00:00:00", foreground=DARK_MUTED_FG).pack(side="left", padx=18)
         ttk.Button(bottom, text="匯出 SRT", command=self.export_srt).pack(side="right")
 
     def _check_dependencies_async(self) -> None:
@@ -796,12 +866,22 @@ class LyricsSrtApp(tk.Tk):
         if row:
             self._activate_segment(int(row))
 
-    def _activate_segment(self, index: int, only_segment: bool = False) -> None:
+    def _activate_segment(self, index: int) -> None:
+        """選取該句並移動播放頭；只有原本就在播放時才接續播放，不會自己開始播放。"""
         if not (0 <= index < len(self.segments)):
             return
         self.tree.selection_set(str(index))
         self.tree.see(str(index))
-        self.play_selected_segment(only_segment=only_segment)
+        segment = self.segments[index]
+        self.playback_offset = segment.start
+        self.play_slider.set(segment.start)
+        self.play_time_var.set(format_timecode(segment.start))
+        self.playing_row = index
+        self.refresh_tree()
+        self.waveform.set_selected(index)
+        self.waveform.set_playhead(segment.start)
+        if self.playing:
+            self._start_playback(segment.start)
 
     def play_selected_segment(self, only_segment: bool = False) -> None:
         row = self.tree.selection()
@@ -983,9 +1063,9 @@ class LyricsSrtApp(tk.Tk):
             tag = "deleted" if segment.deleted else ("music" if segment.kind == MUSIC_KIND else "lyric")
             tags = (tag, "playing") if i == self.playing_row else (tag,)
             self.tree.insert("", "end", iid=str(i), values=(format_timecode(segment.start), format_timecode(segment.end), segment.kind, segment.text), tags=tags)
-        self.tree.tag_configure("music", foreground="#346b39")
-        self.tree.tag_configure("deleted", foreground="#999999")
-        self.tree.tag_configure("playing", background="#dbeafe", foreground="#0f3d75")
+        self.tree.tag_configure("music", foreground=MUSIC_COLOR)
+        self.tree.tag_configure("deleted", foreground=DELETED_COLOR)
+        self.tree.tag_configure("playing", background="#2b4a72", foreground="#eaf4ff")
         if selected and self.tree.exists(selected[0]): self.tree.selection_set(selected[0])
         if hasattr(self, "waveform"):
             current_selection = self.tree.selection()
