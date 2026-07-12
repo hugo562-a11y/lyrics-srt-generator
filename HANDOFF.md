@@ -1,7 +1,7 @@
 # 歌詞 SRT 產生器：交接說明
 
-最後更新：2026-07-12  
-GitHub：<https://github.com/hugo562-a11y/lyrics-srt-generator>  
+最後更新：2026-07-12
+GitHub：<https://github.com/hugo562-a11y/lyrics-srt-generator>
 目前分支：`main`
 
 ## 專案目的
@@ -92,4 +92,3 @@ python app.py
 2. 若前奏仍消失，檢查兩次 Whisper 分析的第一個 segment 時間；可能需要提供手動「前奏結束」時間或更可靠人聲檢測。
 3. 若後段仍漂移，考慮加入波形、拖曳句首／句尾與鍵盤 50ms 微調；或評估可在 Python 3.14 使用的強制對齊方案。
 4. 以乾淨 Windows 使用者環境測試 `run.bat` / `build_exe.bat`。
-
