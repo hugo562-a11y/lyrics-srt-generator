@@ -252,7 +252,12 @@ class LyricsSrtApp(tk.Tk):
         self.vocals_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(controls, text="先分離人聲（較慢）", variable=self.vocals_var).grid(row=1, column=3, columnspan=3, sticky="w", pady=(8, 0))
         self.progress_var = tk.StringVar(value="等待匯入音檔")
-        ttk.Label(controls, textvariable=self.progress_var, foreground="#245a9c").grid(row=2, column=0, columnspan=10, sticky="w", pady=(8, 0))
+        status_row = ttk.Frame(controls)
+        status_row.grid(row=2, column=0, columnspan=10, sticky="ew", pady=(8, 0))
+        status_row.columnconfigure(0, weight=1)
+        ttk.Label(status_row, textvariable=self.progress_var, foreground="#245a9c").grid(row=0, column=0, sticky="w")
+        self.progress_bar = ttk.Progressbar(status_row, mode="indeterminate", length=220)
+        self.progress_bar.grid(row=0, column=1, sticky="e", padx=(12, 0))
 
         body = ttk.Frame(self, padding=(14, 6))
         body.grid(row=2, column=0, sticky="nsew")
@@ -279,8 +284,18 @@ class LyricsSrtApp(tk.Tk):
         ttk.Button(bottom, text="匯出 SRT", command=self.export_srt).pack(side="right")
 
     def _check_dependencies_async(self) -> None:
-        self.progress_var.set("正在確認必要套件（已安裝時不會下載）…")
+        self._set_progress_status("正在確認必要套件（已安裝時不會下載）…", busy=True)
         threading.Thread(target=self._ensure_dependencies, daemon=True).start()
+
+    def _set_progress_status(self, text: str, busy: bool | None = None) -> None:
+        """以活動進度條顯示無法預先估算的下載與 AI 工作。"""
+        self.progress_var.set(text)
+        if busy is None:
+            busy = text.startswith(("正在", "GPU DLL", "偵測到"))
+        if busy:
+            self.progress_bar.start(12)
+        else:
+            self.progress_bar.stop()
 
     def _ensure_dependencies(self) -> None:
         try:
@@ -307,7 +322,7 @@ class LyricsSrtApp(tk.Tk):
         self.segments.clear(); self.undo_stack.clear(); self.redo_stack.clear()
         self.file_var.set(str(self.audio_path))
         self.duration_var.set(f"長度：{format_timecode(self.duration)}")
-        self.progress_var.set("已匯入，請選擇模型後開始分析。")
+        self._set_progress_status("已匯入，請選擇模型後開始分析。", busy=False)
         self.refresh_tree()
 
     def import_lyrics(self) -> None:
@@ -323,7 +338,7 @@ class LyricsSrtApp(tk.Tk):
             messagebox.showerror(APP_TITLE, "歌詞檔沒有可用的文字行。請每句歌詞各佔一行。")
             return
         self.lyrics_file_var.set(f"參考歌詞：{Path(selected).name}（{len(self.reference_lyrics)} 句）")
-        self.progress_var.set("已載入參考歌詞。AI 會只取得時間，SRT 將使用此歌詞原文。")
+        self._set_progress_status("已載入參考歌詞。AI 會只取得時間，SRT 將使用此歌詞原文。", busy=False)
 
     def analyze(self) -> None:
         if not self.audio_path:
@@ -335,7 +350,7 @@ class LyricsSrtApp(tk.Tk):
             messagebox.showerror(APP_TITLE, "最短音樂段必須是數字。")
             return
         self.analyze_btn.configure(state="disabled")
-        self.progress_var.set("正在載入本機模型並轉錄，首次使用會下載模型…")
+        self._set_progress_status("正在載入本機模型並轉錄，首次使用會下載模型…", busy=True)
         reference = list(self.reference_lyrics)
         threading.Thread(target=self._run_transcription, args=(self.audio_path, self.model_var.get(), self.language_var.get(), self.device_var.get(), min_gap, reference, self.precise_var.get(), self.vocals_var.get()), daemon=True).start()
 
@@ -381,6 +396,7 @@ class LyricsSrtApp(tk.Tk):
             source_path = path
             if separate_vocals:
                 source_path, temporary_dir = self._separate_vocals(path)
+            self.events.put(("status", "正在分析音訊與逐字時間點，請稍候…"))
             raw, _ = model.transcribe(str(source_path), language=None if language == "auto" else language, vad_filter=True, condition_on_previous_text=False, beam_size=5, word_timestamps=precise)
             raw_segments = list(raw)
             recognized = word_timing_anchors(raw_segments) if precise else normalize_lyrics(raw_segments)
@@ -399,19 +415,19 @@ class LyricsSrtApp(tk.Tk):
         try:
             while True:
                 event, payload = self.events.get_nowait()
-                if event == "status": self.progress_var.set(str(payload))
-                elif event == "ready": self.progress_var.set("必要套件已安裝，這次啟動不會再檢查或下載。")
+                if event == "status": self._set_progress_status(str(payload))
+                elif event == "ready": self._set_progress_status("必要套件已安裝，這次啟動不會再檢查或下載。", busy=False)
                 elif event == "dependency_error":
-                    self.progress_var.set("必要套件安裝失敗")
+                    self._set_progress_status("必要套件安裝失敗", busy=False)
                     messagebox.showerror(APP_TITLE, f"無法完成自動安裝：\n{payload}")
                 elif event == "done":
                     self.push_undo("AI 分析")
                     self.segments = payload  # type: ignore[assignment]
-                    self.refresh_tree(); self.progress_var.set(f"分析完成：{len(self.segments)} 個標記，可直接校正後匯出。")
+                    self.refresh_tree(); self._set_progress_status(f"分析完成：{len(self.segments)} 個標記，可直接校正後匯出。", busy=False)
                     self.analyze_btn.configure(state="normal")
                 elif event == "error":
                     self.analyze_btn.configure(state="normal")
-                    self.progress_var.set("分析失敗")
+                    self._set_progress_status("分析失敗", busy=False)
                     messagebox.showerror(APP_TITLE, f"AI 分析失敗：\n{payload}")
         except queue.Empty:
             pass
@@ -506,7 +522,7 @@ class LyricsSrtApp(tk.Tk):
         with open(output, "w", encoding="utf-8-sig", newline="\n") as handle:
             for number, item in enumerate(active, 1):
                 handle.write(f"{number}\n{srt_timecode(item.start)} --> {srt_timecode(item.end)}\n{item.text}\n\n")
-        self.progress_var.set(f"已匯出：{output}")
+        self._set_progress_status(f"已匯出：{output}", busy=False)
         messagebox.showinfo(APP_TITLE, "SRT 匯出完成。")
 
 
