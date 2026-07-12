@@ -217,6 +217,7 @@ class LyricsSrtApp(tk.Tk):
         self.playback_started_at = 0.0
         self.playing = False
         self.playing_row: int | None = None
+        self.play_stop_at: float | None = None
         self._ffplay: str | None = None
         self._audio_process: subprocess.Popen[str] | None = None
         self._build_ui()
@@ -287,6 +288,7 @@ class LyricsSrtApp(tk.Tk):
         scroll = ttk.Scrollbar(body, orient="vertical", command=self.tree.yview)
         scroll.grid(row=0, column=1, sticky="ns")
         self.tree.configure(yscrollcommand=scroll.set)
+        self.tree.bind("<ButtonRelease-1>", self.play_clicked_row)
         self.tree.bind("<Double-1>", self._begin_edit)
 
         bottom = ttk.Frame(self, padding=(14, 6, 14, 14))
@@ -299,6 +301,7 @@ class LyricsSrtApp(tk.Tk):
         self.play_slider = ttk.Scale(bottom, from_=0, to=1, command=lambda _value: None)
         self.play_slider.pack(side="left", fill="x", expand=True, padx=(5, 14))
         self.play_slider.bind("<ButtonRelease-1>", self.seek_playback)
+        ttk.Button(bottom, text="▶ 只播選取句", command=lambda: self.play_selected_segment(only_segment=True)).pack(side="left", padx=(0, 14))
         ttk.Button(bottom, text="＋ 新增列", command=self.add_segment).pack(side="left")
         ttk.Button(bottom, text="刪除／還原", command=self.toggle_deleted).pack(side="left", padx=6)
         ttk.Button(bottom, text="復原", command=self.undo).pack(side="left", padx=(18, 0))
@@ -343,7 +346,7 @@ class LyricsSrtApp(tk.Tk):
             messagebox.showerror(APP_TITLE, str(exc))
             return
         self.segments.clear(); self.undo_stack.clear(); self.redo_stack.clear()
-        self.stop_playback()
+        self.stop_playback(reset_position=True)
         self.play_slider.configure(to=max(0.01, self.duration))
         self.file_var.set(str(self.audio_path))
         self.duration_var.set(f"長度：{format_timecode(self.duration)}")
@@ -398,15 +401,19 @@ class LyricsSrtApp(tk.Tk):
             self._audio_process.terminate()
         self._audio_process = None
 
-    def stop_playback(self) -> None:
+    def stop_playback(self, reset_position: bool = False) -> None:
+        if self.playing:
+            self.playback_offset += time.monotonic() - self.playback_started_at
         self._stop_audio_process()
         self.playing = False
-        self.playback_offset = 0.0
+        self.play_stop_at = None
+        if reset_position:
+            self.playback_offset = 0.0
         self.playing_row = None
         if hasattr(self, "play_slider"):
-            self.play_slider.set(0)
+            self.play_slider.set(self.playback_offset)
         if hasattr(self, "play_time_var"):
-            self.play_time_var.set("00:00:00:00")
+            self.play_time_var.set(format_timecode(self.playback_offset))
         if hasattr(self, "play_btn"):
             self.play_btn.configure(text="▶ 播放")
         if hasattr(self, "tree"):
@@ -417,11 +424,33 @@ class LyricsSrtApp(tk.Tk):
         if self.playing:
             self._start_playback(self.playback_offset)
 
+    def play_clicked_row(self, event: tk.Event) -> None:
+        row = self.tree.identify_row(event.y)
+        if row:
+            self.tree.selection_set(row)
+            self.play_selected_segment(only_segment=False)
+
+    def play_selected_segment(self, only_segment: bool = False) -> None:
+        row = self.tree.selection()
+        if not row:
+            messagebox.showinfo(APP_TITLE, "請先點選要播放的列。")
+            return
+        segment = self.segments[int(row[0])]
+        self.play_stop_at = segment.end if only_segment else None
+        self.play_slider.set(segment.start)
+        self.playback_offset = segment.start
+        self.playing_row = int(row[0])
+        self.refresh_tree()
+        if self._ffplay is None:
+            self.toggle_playback()
+        else:
+            self._start_playback(segment.start)
+
     def _update_playback(self) -> None:
         if self.playing:
             current = self.playback_offset + time.monotonic() - self.playback_started_at
-            if current >= self.duration or (self._audio_process is not None and self._audio_process.poll() is not None):
-                self.stop_playback()
+            if current >= self.duration or (self.play_stop_at is not None and current >= self.play_stop_at) or (self._audio_process is not None and self._audio_process.poll() is not None):
+                self.stop_playback(reset_position=current >= self.duration)
             else:
                 self.play_slider.set(current)
                 self.play_time_var.set(format_timecode(current))
@@ -506,12 +535,23 @@ class LyricsSrtApp(tk.Tk):
             source_path = path
             if separate_vocals:
                 source_path, temporary_dir = self._separate_vocals(path)
+            vocal_onset = 0.0
+            if reference:
+                # 另跑一次保守的 VAD，只用來找第一句真正人聲的起點。
+                # 完整逐字對齊仍使用不過濾的分析，避免後段拖音被切掉。
+                self.events.put(("status", "正在辨識前奏結束與第一句人聲位置…"))
+                onset_raw, _ = model.transcribe(str(source_path), language=None if language == "auto" else language, vad_filter=True, condition_on_previous_text=False, beam_size=5)
+                onset_segments = normalize_lyrics(list(onset_raw))
+                if onset_segments:
+                    vocal_onset = onset_segments[0].start
             self.events.put(("status", "正在分析音訊與逐字時間點，請稍候…"))
             # 歌曲拖音與伴奏很容易被一般語音 VAD 當成靜音切掉，尤其是後半段。
             # 提供正確歌詞時以完整音檔對齊，避免錨點在歌曲尚未結束前耗盡。
             raw, _ = model.transcribe(str(source_path), language=None if language == "auto" else language, vad_filter=not bool(reference), condition_on_previous_text=False, beam_size=5, word_timestamps=precise)
             raw_segments = list(raw)
             recognized = word_timing_anchors(raw_segments) if precise else normalize_lyrics(raw_segments)
+            if vocal_onset >= min_gap:
+                recognized = [item for item in recognized if item.end > vocal_onset - 0.08]
             lyrics = align_reference_lyrics(reference, recognized, self.duration) if reference else normalize_lyrics(raw_segments)
             if reference:
                 level = "逐字" if precise and any(getattr(item, "words", None) for item in raw_segments) else "逐句"
