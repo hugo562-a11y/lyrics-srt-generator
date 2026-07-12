@@ -88,6 +88,23 @@ def probe_duration(path: Path) -> float:
         raise RuntimeError("無法取得音檔長度。請安裝 FFmpeg，或使用 WAV/FLAC 音檔。") from exc
 
 
+def decode_waveform(path: Path, sample_rate: int = 4000) -> "np.ndarray":
+    """用 ffmpeg 解碼成單聲道 PCM，回傳 -1~1 浮點數陣列，供聲波顯示使用。"""
+    import numpy as np
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("找不到 FFmpeg 的 ffmpeg.exe，無法產生聲波顯示。請安裝 FFmpeg 並加入 PATH。")
+    result = subprocess.run(
+        [ffmpeg, "-v", "error", "-i", str(path), "-ac", "1", "-ar", str(sample_rate), "-f", "s16le", "-"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if result.returncode != 0 or not result.stdout:
+        message = result.stderr.decode("utf-8", "ignore").strip() or "未知錯誤"
+        raise RuntimeError(f"聲波解碼失敗：{message}")
+    return np.frombuffer(result.stdout, dtype="<i2").astype(np.float32) / 32768.0
+
+
 def normalize_lyrics(raw_segments: Iterable[object]) -> list[Segment]:
     result: list[Segment] = []
     for item in raw_segments:
@@ -197,12 +214,305 @@ def add_music_markers(lyrics: list[Segment], duration: float, min_gap: float) ->
     return output
 
 
+class WaveformView(ttk.Frame):
+    """聲波、時間軸與逐句範圍；可直接拖曳句子的起訖點來校正時間。"""
+
+    RULER_H = 18
+    WAVE_H = 96
+    MIN_PPS = 8.0
+    MAX_PPS = 400.0
+    EDGE_GRAB_PX = 6
+
+    def __init__(self, master: tk.Widget, *, on_seek, on_select, on_edit) -> None:
+        super().__init__(master)
+        self.on_seek = on_seek
+        self.on_select = on_select
+        self.on_edit = on_edit
+        self.duration = 0.0
+        self.samples = None  # np.ndarray | None，讀取聲波前先顯示空白時間軸
+        self.segments: list[Segment] = []
+        self.selected_index: int | None = None
+        self.pixels_per_second = 40.0
+        self.playhead = 0.0
+        self._drag: dict | None = None
+
+        toolbar = ttk.Frame(self)
+        toolbar.pack(fill="x")
+        ttk.Label(toolbar, text="拖曳邊界調整起訖時間；點聲波句子播放；點時間尺跳轉；滾輪縮放；按住中鍵拖曳平移", foreground="#666").pack(side="left")
+        ttk.Button(toolbar, text="－", width=3, command=lambda: self.zoom(1 / 1.5)).pack(side="right")
+        ttk.Button(toolbar, text="符合視窗", command=self.fit_to_window).pack(side="right", padx=4)
+        ttk.Button(toolbar, text="＋", width=3, command=lambda: self.zoom(1.5)).pack(side="right")
+
+        canvas_area = ttk.Frame(self)
+        canvas_area.pack(fill="both", expand=True)
+        canvas_area.columnconfigure(0, weight=1)
+        canvas_area.rowconfigure(0, weight=1)
+        self.canvas = tk.Canvas(canvas_area, height=self.RULER_H + self.WAVE_H, background="#eef1f5", highlightthickness=0)
+        self.canvas.grid(row=0, column=0, sticky="ew")
+        hscroll = ttk.Scrollbar(canvas_area, orient="horizontal", command=self.canvas.xview)
+        hscroll.grid(row=1, column=0, sticky="ew")
+        self.canvas.configure(xscrollcommand=hscroll.set)
+
+        self.canvas.bind("<Configure>", lambda _e: self._redraw())
+        self.canvas.bind("<Button-1>", self._on_press)
+        self.canvas.bind("<B1-Motion>", self._on_drag)
+        self.canvas.bind("<ButtonRelease-1>", self._on_release)
+        self.canvas.bind("<MouseWheel>", self._on_wheel)
+        self.canvas.bind("<ButtonPress-2>", self._on_pan_start)
+        self.canvas.bind("<B2-Motion>", self._on_pan_move)
+
+    def set_audio(self, duration: float, samples=None) -> None:
+        self.duration = max(0.0, duration)
+        if samples is not None:
+            self.samples = samples
+        else:
+            self.samples = None
+        self.after(80, self.fit_to_window)
+
+    def set_segments(self, segments: list[Segment], selected_index: int | None) -> None:
+        self.segments = segments
+        self.selected_index = selected_index
+        self._redraw()
+
+    def set_selected(self, index: int | None) -> None:
+        self.selected_index = index
+        self._redraw()
+
+    def zoom(self, factor: float) -> None:
+        if self.duration <= 0:
+            return
+        center_time = self._x_to_time(self.canvas.canvasx(self.canvas.winfo_width() / 2))
+        self.pixels_per_second = min(self.MAX_PPS, max(self.MIN_PPS, self.pixels_per_second * factor))
+        self._redraw()
+        self.reveal_time(center_time, center=True)
+
+    def _zoom_at(self, screen_x: float, factor: float) -> None:
+        """以滑鼠所在時間點為中心縮放，縮放後同一時間點仍停留在游標下方。"""
+        if self.duration <= 0:
+            return
+        anchor_time = self._x_to_time(self.canvas.canvasx(screen_x))
+        self.pixels_per_second = min(self.MAX_PPS, max(self.MIN_PPS, self.pixels_per_second * factor))
+        self._redraw()
+        width = self._canvas_width()
+        if width <= 0:
+            return
+        target = max(0.0, self._time_to_x(anchor_time) - screen_x)
+        self.canvas.xview_moveto(min(1.0, target / width))
+
+    def fit_to_window(self) -> None:
+        width = self.canvas.winfo_width() or 900
+        if self.duration > 0:
+            self.pixels_per_second = max(self.MIN_PPS, min(self.MAX_PPS, width / self.duration))
+        self._redraw()
+
+    def set_playhead(self, t: float, follow: bool = False) -> None:
+        self.playhead = max(0.0, min(self.duration, t))
+        x = self._time_to_x(self.playhead)
+        total_h = self.RULER_H + self.WAVE_H
+        if self.canvas.find_withtag("playhead"):
+            self.canvas.coords("playhead", x, 0, x, total_h)
+        else:
+            self.canvas.create_line(x, 0, x, total_h, fill="#e3342f", width=2, tags=("playhead",))
+        if follow:
+            self.reveal_time(self.playhead)
+
+    def reveal_time(self, t: float, center: bool = False) -> None:
+        width = self._canvas_width()
+        view_w = self.canvas.winfo_width()
+        if width <= 0 or view_w <= 0:
+            return
+        x = self._time_to_x(t)
+        if center:
+            self.canvas.xview_moveto(max(0.0, x - view_w / 2) / width)
+            return
+        left = self.canvas.canvasx(0)
+        right = left + view_w
+        if x < left + 20 or x > right - 20:
+            self.canvas.xview_moveto(max(0.0, x - view_w / 2) / width)
+
+    def _canvas_width(self) -> int:
+        return max(1, int(self.duration * self.pixels_per_second))
+
+    def _time_to_x(self, t: float) -> float:
+        return t * self.pixels_per_second
+
+    def _x_to_time(self, x: float) -> float:
+        if not self.pixels_per_second:
+            return 0.0
+        return max(0.0, min(self.duration, x / self.pixels_per_second))
+
+    def _nice_interval(self) -> float:
+        target_px = 90
+        raw = target_px / max(self.pixels_per_second, 0.01)
+        for step in (0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600):
+            if step >= raw:
+                return step
+        return 600.0
+
+    def _redraw(self) -> None:
+        self.canvas.delete("all")
+        width = self._canvas_width()
+        height = self.RULER_H + self.WAVE_H
+        self.canvas.configure(scrollregion=(0, 0, width, height))
+        self._draw_ruler(width, height)
+        self._draw_waveform(width)
+        self._draw_segments()
+        self.canvas.create_line(self._time_to_x(self.playhead), 0, self._time_to_x(self.playhead), height, fill="#e3342f", width=2, tags=("playhead",))
+
+    def _draw_ruler(self, width: int, height: int) -> None:
+        self.canvas.create_rectangle(0, 0, width, self.RULER_H, fill="#d8dee6", width=0)
+        interval = self._nice_interval()
+        steps = int(self.duration / interval) + 2 if interval else 0
+        for i in range(steps):
+            t = i * interval
+            x = self._time_to_x(t)
+            self.canvas.create_line(x, 0, x, height, fill="#c3ccd6")
+            self.canvas.create_text(x + 3, self.RULER_H / 2, text=format_timecode(t)[:8], anchor="w", font=("Consolas", 8), fill="#3c4550")
+
+    def _draw_waveform(self, width: int) -> None:
+        top = self.RULER_H
+        mid = top + self.WAVE_H / 2
+        half = self.WAVE_H / 2 - 4
+        columns = max(1, min(width, 4000))
+        if self.samples is None or len(self.samples) == 0 or width <= 0:
+            self.canvas.create_line(0, mid, width, mid, fill="#b7c3d1")
+            return
+        import numpy as np
+        bucket = max(1, len(self.samples) // columns)
+        usable = (len(self.samples) // bucket) * bucket
+        if usable == 0:
+            self.canvas.create_line(0, mid, width, mid, fill="#b7c3d1")
+            return
+        peaks = np.abs(self.samples[:usable].reshape(-1, bucket)).max(axis=1)
+        xs = np.linspace(0, width, num=len(peaks), endpoint=False)
+        top_points = [(float(x), mid - float(p) * half) for x, p in zip(xs, peaks)]
+        bottom_points = [(float(x), mid + float(p) * half) for x, p in zip(xs, peaks)]
+        polygon: list[float] = []
+        for x, y in top_points:
+            polygon.extend((x, y))
+        for x, y in reversed(bottom_points):
+            polygon.extend((x, y))
+        self.canvas.create_polygon(*polygon, fill="#7fa8e8", outline="", width=0)
+        self.canvas.create_line(0, mid, width, mid, fill="#4d75b8")
+
+    GAP_PX = 2
+    START_COLOR = "#2f9e44"
+    END_COLOR = "#e03131"
+
+    def _draw_segments(self) -> None:
+        top = self.RULER_H
+        bottom = top + self.WAVE_H
+        for index, segment in enumerate(self.segments):
+            x0 = self._time_to_x(segment.start)
+            x1 = self._time_to_x(segment.end)
+            if segment.deleted:
+                fill, outline = "#999999", "#777777"
+            elif segment.kind == MUSIC_KIND:
+                fill, outline = "#3f9142", "#2c6b30"
+            else:
+                fill, outline = "#2f6fb3", "#1f4d80"
+            width_px = 2 if index == self.selected_index else 1
+            outline_color = "#e0532c" if index == self.selected_index else outline
+            # 兩句緊鄰時保留一點視覺間隙，避免色塊黏在一起、難以分辨與拖曳。
+            mid = (x0 + x1) / 2
+            fill_left = min(x0 + self.GAP_PX, mid)
+            fill_right = max(x1 - self.GAP_PX, mid)
+            self.canvas.create_rectangle(fill_left, top, fill_right, bottom, fill=fill, stipple="gray25", outline=outline_color, width=width_px, tags=("segment", f"seg:{index}"))
+            label = segment.text if len(segment.text) <= 40 else segment.text[:39] + "…"
+            self.canvas.create_text(fill_left + 4, top + 4, text=label, anchor="nw", font=("Microsoft JhengHei UI", 8), fill="#10233d", tags=("segment_label",))
+            self.canvas.create_line(x0, top, x0, bottom, fill=self.START_COLOR, width=2, tags=("handle", f"handle:{index}:start"))
+            self.canvas.create_line(x1, top, x1, bottom, fill=self.END_COLOR, width=2, tags=("handle", f"handle:{index}:end"))
+
+    def _find_handle(self, x: float, y: float) -> tuple[int, str] | None:
+        best = None
+        best_dist = self.EDGE_GRAB_PX
+        for item in self.canvas.find_withtag("handle"):
+            coords = self.canvas.coords(item)
+            if not coords:
+                continue
+            dist = abs(coords[0] - x)
+            if dist <= best_dist:
+                best_dist = dist
+                tag = next((t for t in self.canvas.gettags(item) if t.startswith("handle:")), None)
+                if tag:
+                    _, idx_str, edge = tag.split(":")
+                    best = (int(idx_str), edge)
+        return best
+
+    def _find_segment(self, x: float, y: float) -> int | None:
+        for item in self.canvas.find_withtag("segment"):
+            x0, y0, x1, y1 = self.canvas.coords(item)
+            if x0 <= x <= x1 and y0 <= y <= y1:
+                tag = next((t for t in self.canvas.gettags(item) if t.startswith("seg:")), None)
+                if tag:
+                    return int(tag.split(":")[1])
+        return None
+
+    def _on_press(self, event: tk.Event) -> None:
+        x = self.canvas.canvasx(event.x)
+        y = event.y
+        self._drag = None
+        if y <= self.RULER_H:
+            self.on_seek(self._x_to_time(x))
+            return
+        handle = self._find_handle(x, y)
+        if handle is not None:
+            self._drag = {"index": handle[0], "edge": handle[1]}
+            return
+        index = self._find_segment(x, y)
+        if index is not None:
+            self.on_select(index)
+        else:
+            self.on_seek(self._x_to_time(x))
+
+    def _on_drag(self, event: tk.Event) -> None:
+        if not self._drag:
+            return
+        x = self.canvas.canvasx(event.x)
+        t = self._x_to_time(x)
+        index, edge = self._drag["index"], self._drag["edge"]
+        if not (0 <= index < len(self.segments)):
+            self._drag = None
+            return
+        segment = self.segments[index]
+        if edge == "start":
+            t = min(t, segment.end - 0.02)
+        else:
+            t = max(t, segment.start + 0.02)
+        t = max(0.0, min(self.duration, t))
+        self._drag["preview"] = t
+        x = self._time_to_x(t)
+        top, bottom = self.RULER_H, self.RULER_H + self.WAVE_H
+        self.canvas.coords(f"handle:{index}:{edge}", x, top, x, bottom)
+        rect = next(iter(self.canvas.find_withtag(f"seg:{index}")), None)
+        if rect:
+            x0, y0, x1, y1 = self.canvas.coords(rect)
+            if edge == "start":
+                self.canvas.coords(rect, x, y0, x1, y1)
+            else:
+                self.canvas.coords(rect, x0, y0, x, y1)
+
+    def _on_release(self, _event: tk.Event) -> None:
+        if self._drag and "preview" in self._drag:
+            self.on_edit(self._drag["index"], self._drag["edge"], self._drag["preview"])
+        self._drag = None
+
+    def _on_wheel(self, event: tk.Event) -> None:
+        self._zoom_at(event.x, 1.15 if event.delta > 0 else 1 / 1.15)
+
+    def _on_pan_start(self, event: tk.Event) -> None:
+        self.canvas.scan_mark(event.x, event.y)
+
+    def _on_pan_move(self, event: tk.Event) -> None:
+        self.canvas.scan_dragto(event.x, event.y, gain=1)
+
+
 class LyricsSrtApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title(APP_TITLE)
-        self.geometry("1080x700")
-        self.minsize(860, 540)
+        self.geometry("1080x780")
+        self.minsize(860, 600)
         self.audio_path: Path | None = None
         self.duration = 0.0
         self.reference_lyrics: list[str] = []
@@ -223,6 +533,10 @@ class LyricsSrtApp(tk.Tk):
         self._build_ui()
         self.bind_all("<Control-z>", self.undo)
         self.bind_all("<Control-y>", self.redo)
+        # 空白鍵＝播放／暫停；先阻斷按鈕與勾選框的預設空白鍵行為，避免誤觸到焦點所在的按鈕。
+        self.bind_class("TButton", "<space>", lambda _e: "break")
+        self.bind_class("TCheckbutton", "<space>", lambda _e: "break")
+        self.bind_all("<space>", self._on_space_key)
         self.after(120, self._poll_events)
         self.after(250, self._check_dependencies_async)
         self.after(75, self._update_playback)
@@ -232,7 +546,7 @@ class LyricsSrtApp(tk.Tk):
         style.configure("Treeview", rowheight=28, font=("Microsoft JhengHei UI", 10))
         style.configure("Treeview.Heading", font=("Microsoft JhengHei UI", 10, "bold"))
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(2, weight=1)
+        self.rowconfigure(3, weight=1)
 
         top = ttk.Frame(self, padding=(14, 12, 14, 6))
         top.grid(row=0, column=0, sticky="ew")
@@ -275,8 +589,13 @@ class LyricsSrtApp(tk.Tk):
         self.progress_bar = ttk.Progressbar(status_row, mode="indeterminate", length=220)
         self.progress_bar.grid(row=0, column=1, sticky="e", padx=(12, 0))
 
+        wave_frame = ttk.LabelFrame(self, text="聲波與時間軸", padding=(8, 4))
+        wave_frame.grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 6))
+        self.waveform = WaveformView(wave_frame, on_seek=self._waveform_seek, on_select=self._activate_segment, on_edit=self._waveform_edit)
+        self.waveform.pack(fill="both", expand=True)
+
         body = ttk.Frame(self, padding=(14, 6))
-        body.grid(row=2, column=0, sticky="nsew")
+        body.grid(row=3, column=0, sticky="nsew")
         body.columnconfigure(0, weight=1)
         body.rowconfigure(0, weight=1)
         columns = ("start", "end", "kind", "text")
@@ -292,7 +611,7 @@ class LyricsSrtApp(tk.Tk):
         self.tree.bind("<Double-1>", self._begin_edit)
 
         bottom = ttk.Frame(self, padding=(14, 6, 14, 14))
-        bottom.grid(row=3, column=0, sticky="ew")
+        bottom.grid(row=4, column=0, sticky="ew")
         self.play_btn = ttk.Button(bottom, text="▶ 播放", command=self.toggle_playback)
         self.play_btn.pack(side="left")
         ttk.Button(bottom, text="■ 停止", command=self.stop_playback).pack(side="left", padx=(6, 14))
@@ -352,6 +671,22 @@ class LyricsSrtApp(tk.Tk):
         self.duration_var.set(f"長度：{format_timecode(self.duration)}")
         self._set_progress_status("已匯入，請選擇模型後開始分析。", busy=False)
         self.refresh_tree()
+        self.waveform.set_audio(self.duration, None)
+        self._load_waveform_async()
+
+    def _load_waveform_async(self) -> None:
+        path = self.audio_path
+        if not path:
+            return
+        threading.Thread(target=self._decode_waveform, args=(path,), daemon=True).start()
+
+    def _decode_waveform(self, path: Path) -> None:
+        try:
+            self._ensure_dependencies()
+            samples = decode_waveform(path)
+            self.events.put(("waveform", (path, samples)))
+        except Exception as exc:
+            self.events.put(("waveform_error", str(exc)))
 
     def _load_audio_backend(self) -> None:
         ffplay = shutil.which("ffplay")
@@ -359,6 +694,13 @@ class LyricsSrtApp(tk.Tk):
             self.events.put(("audio_ready", ffplay))
         else:
             self.events.put(("audio_error", "找不到 FFmpeg 的 ffplay.exe。請安裝 FFmpeg 並加入 PATH 後重新啟動程式。"))
+
+    def _on_space_key(self, event: tk.Event) -> str | None:
+        widget = event.widget
+        if isinstance(widget, (tk.Entry, ttk.Entry, ttk.Combobox)):
+            return None
+        self.toggle_playback()
+        return "break"
 
     def toggle_playback(self) -> None:
         if not self.audio_path:
@@ -416,19 +758,50 @@ class LyricsSrtApp(tk.Tk):
             self.play_time_var.set(format_timecode(self.playback_offset))
         if hasattr(self, "play_btn"):
             self.play_btn.configure(text="▶ 播放")
+        if hasattr(self, "waveform"):
+            self.waveform.set_playhead(self.playback_offset)
         if hasattr(self, "tree"):
             self.refresh_tree()
 
     def seek_playback(self, _event: tk.Event) -> None:
         self.playback_offset = float(self.play_slider.get())
+        self.waveform.set_playhead(self.playback_offset)
         if self.playing:
             self._start_playback(self.playback_offset)
+
+    def _waveform_seek(self, t: float) -> None:
+        self.playback_offset = t
+        self.play_slider.set(t)
+        self.play_time_var.set(format_timecode(t))
+        self.waveform.set_playhead(t)
+        if self.playing:
+            self._start_playback(t)
+
+    def _waveform_edit(self, index: int, edge: str, value: float) -> None:
+        if not (0 <= index < len(self.segments)):
+            return
+        self.push_undo("拖曳調整時間")
+        segment = self.segments[index]
+        if edge == "start":
+            segment.start = max(0.0, value)
+        else:
+            segment.end = min(self.duration, value)
+        if segment.end <= segment.start:
+            self.undo_stack.pop()
+            return
+        self.refresh_tree()
 
     def play_clicked_row(self, event: tk.Event) -> None:
         row = self.tree.identify_row(event.y)
         if row:
-            self.tree.selection_set(row)
-            self.play_selected_segment(only_segment=False)
+            self._activate_segment(int(row))
+
+    def _activate_segment(self, index: int, only_segment: bool = False) -> None:
+        if not (0 <= index < len(self.segments)):
+            return
+        self.tree.selection_set(str(index))
+        self.tree.see(str(index))
+        self.play_selected_segment(only_segment=only_segment)
 
     def play_selected_segment(self, only_segment: bool = False) -> None:
         row = self.tree.selection()
@@ -441,6 +814,8 @@ class LyricsSrtApp(tk.Tk):
         self.playback_offset = segment.start
         self.playing_row = int(row[0])
         self.refresh_tree()
+        self.waveform.set_selected(int(row[0]))
+        self.waveform.set_playhead(segment.start, follow=True)
         if self._ffplay is None:
             self.toggle_playback()
         else:
@@ -454,6 +829,7 @@ class LyricsSrtApp(tk.Tk):
             else:
                 self.play_slider.set(current)
                 self.play_time_var.set(format_timecode(current))
+                self.waveform.set_playhead(current, follow=True)
                 active = next((i for i, item in enumerate(self.segments) if not item.deleted and item.start <= current <= item.end), None)
                 if active != self.playing_row:
                     self.playing_row = active
@@ -590,6 +966,12 @@ class LyricsSrtApp(tk.Tk):
                     self.analyze_btn.configure(state="normal")
                     self._set_progress_status("分析失敗", busy=False)
                     messagebox.showerror(APP_TITLE, f"AI 分析失敗：\n{payload}")
+                elif event == "waveform":
+                    src_path, samples = payload
+                    if self.audio_path == src_path:
+                        self.waveform.set_audio(self.duration, samples)
+                elif event == "waveform_error":
+                    self._set_progress_status(f"聲波顯示無法產生（不影響其他功能）：{payload}", busy=False)
         except queue.Empty:
             pass
         self.after(120, self._poll_events)
@@ -605,6 +987,9 @@ class LyricsSrtApp(tk.Tk):
         self.tree.tag_configure("deleted", foreground="#999999")
         self.tree.tag_configure("playing", background="#dbeafe", foreground="#0f3d75")
         if selected and self.tree.exists(selected[0]): self.tree.selection_set(selected[0])
+        if hasattr(self, "waveform"):
+            current_selection = self.tree.selection()
+            self.waveform.set_segments(self.segments, int(current_selection[0]) if current_selection else None)
 
     def push_undo(self, _label: str) -> None:
         self.undo_stack.append(copy.deepcopy(self.segments))
