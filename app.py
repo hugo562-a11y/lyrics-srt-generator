@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
@@ -205,11 +206,17 @@ class LyricsSrtApp(tk.Tk):
         self.redo_stack: list[list[Segment]] = []
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self._editing: tuple[str, str] | None = None
+        self.playback_offset = 0.0
+        self.playback_started_at = 0.0
+        self.playing = False
+        self.playing_row: int | None = None
+        self._pygame = None
         self._build_ui()
         self.bind_all("<Control-z>", self.undo)
         self.bind_all("<Control-y>", self.redo)
         self.after(120, self._poll_events)
         self.after(250, self._check_dependencies_async)
+        self.after(75, self._update_playback)
 
     def _build_ui(self) -> None:
         style = ttk.Style(self)
@@ -276,6 +283,14 @@ class LyricsSrtApp(tk.Tk):
 
         bottom = ttk.Frame(self, padding=(14, 6, 14, 14))
         bottom.grid(row=3, column=0, sticky="ew")
+        self.play_btn = ttk.Button(bottom, text="▶ 播放", command=self.toggle_playback)
+        self.play_btn.pack(side="left")
+        ttk.Button(bottom, text="■ 停止", command=self.stop_playback).pack(side="left", padx=(6, 14))
+        self.play_time_var = tk.StringVar(value="00:00:00:00")
+        ttk.Label(bottom, textvariable=self.play_time_var, width=13).pack(side="left")
+        self.play_slider = ttk.Scale(bottom, from_=0, to=1, command=lambda _value: None)
+        self.play_slider.pack(side="left", fill="x", expand=True, padx=(5, 14))
+        self.play_slider.bind("<ButtonRelease-1>", self.seek_playback)
         ttk.Button(bottom, text="＋ 新增列", command=self.add_segment).pack(side="left")
         ttk.Button(bottom, text="刪除／還原", command=self.toggle_deleted).pack(side="left", padx=6)
         ttk.Button(bottom, text="復原", command=self.undo).pack(side="left", padx=(18, 0))
@@ -320,10 +335,91 @@ class LyricsSrtApp(tk.Tk):
             messagebox.showerror(APP_TITLE, str(exc))
             return
         self.segments.clear(); self.undo_stack.clear(); self.redo_stack.clear()
+        self.stop_playback()
+        self.play_slider.configure(to=max(0.01, self.duration))
         self.file_var.set(str(self.audio_path))
         self.duration_var.set(f"長度：{format_timecode(self.duration)}")
         self._set_progress_status("已匯入，請選擇模型後開始分析。", busy=False)
         self.refresh_tree()
+
+    def _load_audio_backend(self) -> None:
+        try:
+            ensure_optional_package("pygame", "pygame>=2.6.1", lambda text: self.events.put(("status", text)))
+            import pygame
+            pygame.mixer.init()
+            self.events.put(("audio_ready", pygame))
+        except Exception as exc:
+            self.events.put(("audio_error", str(exc)))
+
+    def toggle_playback(self) -> None:
+        if not self.audio_path:
+            messagebox.showinfo(APP_TITLE, "請先匯入音檔。")
+            return
+        if self._pygame is None:
+            self.play_btn.configure(state="disabled")
+            self._set_progress_status("正在準備本機播放器，首次使用會自動安裝…", busy=True)
+            threading.Thread(target=self._load_audio_backend, daemon=True).start()
+            return
+        if self.playing:
+            self._pygame.mixer.music.pause()
+            self.playback_offset += time.monotonic() - self.playback_started_at
+            self.playing = False
+            self.play_btn.configure(text="▶ 繼續")
+        else:
+            self._start_playback(float(self.play_slider.get()))
+
+    def _start_playback(self, offset: float) -> None:
+        if not self._pygame or not self.audio_path:
+            return
+        offset = min(max(0.0, offset), max(0.0, self.duration - 0.01))
+        try:
+            self._pygame.mixer.music.load(str(self.audio_path))
+            self._pygame.mixer.music.play(start=offset)
+        except Exception as exc:
+            messagebox.showerror(APP_TITLE, f"無法播放此音檔：\n{exc}")
+            return
+        self.playback_offset = offset
+        self.playback_started_at = time.monotonic()
+        self.playing = True
+        self.play_btn.configure(text="❚❚ 暫停")
+
+    def stop_playback(self) -> None:
+        if self._pygame:
+            self._pygame.mixer.music.stop()
+        self.playing = False
+        self.playback_offset = 0.0
+        self.playing_row = None
+        if hasattr(self, "play_slider"):
+            self.play_slider.set(0)
+        if hasattr(self, "play_time_var"):
+            self.play_time_var.set("00:00:00:00")
+        if hasattr(self, "play_btn"):
+            self.play_btn.configure(text="▶ 播放")
+        if hasattr(self, "tree"):
+            self.refresh_tree()
+
+    def seek_playback(self, _event: tk.Event) -> None:
+        self.playback_offset = float(self.play_slider.get())
+        if self.playing:
+            self._start_playback(self.playback_offset)
+
+    def _update_playback(self) -> None:
+        if self.playing:
+            current = self.playback_offset + time.monotonic() - self.playback_started_at
+            if current >= self.duration or not self._pygame.mixer.music.get_busy():
+                self.stop_playback()
+            else:
+                self.play_slider.set(current)
+                self.play_time_var.set(format_timecode(current))
+                active = next((i for i, item in enumerate(self.segments) if not item.deleted and item.start <= current <= item.end), None)
+                if active != self.playing_row:
+                    self.playing_row = active
+                    self.refresh_tree()
+                    if active is not None and self.tree.exists(str(active)):
+                        self.tree.selection_set(str(active))
+                        self.tree.focus(str(active))
+                        self.tree.see(str(active))
+        self.after(75, self._update_playback)
 
     def import_lyrics(self) -> None:
         selected = filedialog.askopenfilename(title="選擇歌詞文字檔", filetypes=SUPPORTED_LYRICS)
@@ -420,6 +516,15 @@ class LyricsSrtApp(tk.Tk):
                 elif event == "dependency_error":
                     self._set_progress_status("必要套件安裝失敗", busy=False)
                     messagebox.showerror(APP_TITLE, f"無法完成自動安裝：\n{payload}")
+                elif event == "audio_ready":
+                    self._pygame = payload
+                    self.play_btn.configure(state="normal")
+                    self._set_progress_status("播放器已就緒。按播放即可同步檢查每一句。", busy=False)
+                    self._start_playback(float(self.play_slider.get()))
+                elif event == "audio_error":
+                    self.play_btn.configure(state="normal")
+                    self._set_progress_status("播放器準備失敗", busy=False)
+                    messagebox.showerror(APP_TITLE, f"無法準備播放器：\n{payload}")
                 elif event == "done":
                     self.push_undo("AI 分析")
                     self.segments = payload  # type: ignore[assignment]
@@ -438,9 +543,11 @@ class LyricsSrtApp(tk.Tk):
         for item in self.tree.get_children(): self.tree.delete(item)
         for i, segment in enumerate(self.segments):
             tag = "deleted" if segment.deleted else ("music" if segment.kind == MUSIC_KIND else "lyric")
-            self.tree.insert("", "end", iid=str(i), values=(format_timecode(segment.start), format_timecode(segment.end), segment.kind, segment.text), tags=(tag,))
+            tags = (tag, "playing") if i == self.playing_row else (tag,)
+            self.tree.insert("", "end", iid=str(i), values=(format_timecode(segment.start), format_timecode(segment.end), segment.kind, segment.text), tags=tags)
         self.tree.tag_configure("music", foreground="#346b39")
         self.tree.tag_configure("deleted", foreground="#999999")
+        self.tree.tag_configure("playing", background="#dbeafe", foreground="#0f3d75")
         if selected and self.tree.exists(selected[0]): self.tree.selection_set(selected[0])
 
     def push_undo(self, _label: str) -> None:
