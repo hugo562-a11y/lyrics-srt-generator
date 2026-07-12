@@ -178,6 +178,8 @@ class LyricsSrtApp(tk.Tk):
         self.audio_path: Path | None = None
         self.duration = 0.0
         self.reference_lyrics: list[str] = []
+        self.dependencies_ready = threading.Event()
+        self._dependency_lock = threading.Lock()
         self.segments: list[Segment] = []
         self.undo_stack: list[list[Segment]] = []
         self.redo_stack: list[list[Segment]] = []
@@ -253,12 +255,17 @@ class LyricsSrtApp(tk.Tk):
         ttk.Button(bottom, text="匯出 SRT", command=self.export_srt).pack(side="right")
 
     def _check_dependencies_async(self) -> None:
-        self.progress_var.set("正在檢查必要套件…")
+        self.progress_var.set("正在確認必要套件（已安裝時不會下載）…")
         threading.Thread(target=self._ensure_dependencies, daemon=True).start()
 
     def _ensure_dependencies(self) -> None:
         try:
-            ensure_required_packages(lambda text: self.events.put(("status", text)))
+            # 啟動與分析可能同時觸發；整個應用程式生命週期只檢查／安裝一次。
+            with self._dependency_lock:
+                if self.dependencies_ready.is_set():
+                    return
+                ensure_required_packages(lambda text: self.events.put(("status", text)))
+                self.dependencies_ready.set()
             self.events.put(("ready", None))
         except Exception as exc:
             self.events.put(("dependency_error", str(exc)))
@@ -310,7 +317,7 @@ class LyricsSrtApp(tk.Tk):
 
     def _run_transcription(self, path: Path, model_name: str, language: str, device_choice: str, min_gap: float, reference: list[str]) -> None:
         try:
-            ensure_required_packages(lambda text: self.events.put(("status", text)))
+            self._ensure_dependencies()
             from faster_whisper import WhisperModel
             self.events.put(("status", "正在以本機 Whisper 分析音檔…"))
             use_gpu = device_choice != "CPU"
@@ -347,7 +354,7 @@ class LyricsSrtApp(tk.Tk):
             while True:
                 event, payload = self.events.get_nowait()
                 if event == "status": self.progress_var.set(str(payload))
-                elif event == "ready": self.progress_var.set("必要套件已就緒。請匯入音檔後開始分析。")
+                elif event == "ready": self.progress_var.set("必要套件已安裝，這次啟動不會再檢查或下載。")
                 elif event == "dependency_error":
                     self.progress_var.set("必要套件安裝失敗")
                     messagebox.showerror(APP_TITLE, f"無法完成自動安裝：\n{payload}")
