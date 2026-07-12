@@ -37,6 +37,12 @@ def ensure_required_packages(status: Status) -> None:
     status("必要套件已就緒。")
 
 
+def ensure_optional_package(module: str, package: str, status: Status) -> None:
+    """僅在使用者啟用選用功能時才下載對應套件。"""
+    if importlib.util.find_spec(module) is None:
+        _pip_install([package], status)
+
+
 def add_nvidia_dll_paths() -> bool:
     """讓 pip 安裝的 NVIDIA DLL 可被 CTranslate2 找到。"""
     candidates: list[Path] = []

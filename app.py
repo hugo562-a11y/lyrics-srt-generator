@@ -6,7 +6,9 @@ import difflib
 import os
 import queue
 import re
+import shutil
 import subprocess
+import tempfile
 import threading
 import tkinter as tk
 from dataclasses import dataclass
@@ -14,7 +16,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Iterable
 
-from bootstrap import add_nvidia_dll_paths, ensure_required_packages, gpu_runtime_ready, install_gpu_runtime
+from bootstrap import add_nvidia_dll_paths, ensure_optional_package, ensure_required_packages, gpu_runtime_ready, install_gpu_runtime
 
 
 APP_TITLE = "歌詞 SRT 產生器"
@@ -96,6 +98,24 @@ def normalize_lyrics(raw_segments: Iterable[object]) -> list[Segment]:
     return result
 
 
+def word_timing_anchors(raw_segments: Iterable[object]) -> list[Segment]:
+    """將 Whisper 的逐字時間轉為更細的對齊錨點；無逐字資料則回退整句。"""
+    anchors: list[Segment] = []
+    for segment in raw_segments:
+        words = getattr(segment, "words", None) or []
+        for word in words:
+            start = getattr(word, "start", None)
+            end = getattr(word, "end", None)
+            text = str(getattr(word, "word", "")).strip()
+            if text and start is not None and end is not None and end > start:
+                anchors.append(Segment(float(start), float(end), LYRIC_KIND, text))
+        if not words:
+            text = str(getattr(segment, "text", "")).strip()
+            if text and segment.end > segment.start:
+                anchors.append(Segment(float(segment.start), float(segment.end), LYRIC_KIND, text))
+    return anchors
+
+
 def read_lyric_lines(path: Path) -> list[str]:
     """讀取一般文字或 LRC 歌詞；LRC 的既有時間標籤會被忽略。"""
     last_error: UnicodeError | None = None
@@ -116,7 +136,7 @@ def _comparison_text(value: str) -> str:
     return re.sub(r"[^\w\u4e00-\u9fff]+", "", value.lower())
 
 
-def align_reference_lyrics(reference_lines: list[str], recognized: list[Segment], duration: float) -> list[Segment]:
+def align_reference_lyrics(reference_lines: list[str], recognized: list[Segment], duration: float, max_span: int = 32) -> list[Segment]:
     """用 AI 聽到的時間錨點，依序套用使用者提供的原始歌詞文字。"""
     if not reference_lines:
         return recognized
@@ -134,13 +154,13 @@ def align_reference_lyrics(reference_lines: list[str], recognized: list[Segment]
             step = max(0.05, (duration - previous_end) / remaining_lines)
             result.append(Segment(previous_end, min(duration, previous_end + step), LYRIC_KIND, line))
             continue
-        # 每句最多合併四個 Whisper 片段；保留足夠片段給後面的歌詞行。
-        max_end = min(len(recognized) - (remaining_lines - 1), anchor + 4)
+        # 逐字模式可合併較多錨點；仍保留足夠項目給後面的歌詞行。
+        max_end = min(len(recognized) - (remaining_lines - 1), anchor + max_span)
         wanted = _comparison_text(line)
         best_end, best_score = anchor + 1, -1.0
         for end in range(anchor + 1, max_end + 1):
             heard = _comparison_text("".join(item.text for item in recognized[anchor:end]))
-            score = difflib.SequenceMatcher(None, wanted, heard).ratio() - 0.025 * (end - anchor - 1)
+            score = difflib.SequenceMatcher(None, wanted, heard).ratio() - 0.008 * abs(len(heard) - len(wanted))
             if score > best_score:
                 best_end, best_score = end, score
         result.append(Segment(recognized[anchor].start, recognized[best_end - 1].end, LYRIC_KIND, line))
@@ -227,8 +247,12 @@ class LyricsSrtApp(tk.Tk):
         ttk.Combobox(controls, textvariable=self.device_var, width=16, state="readonly", values=("自動（GPU 優先）", "GPU", "CPU")).grid(row=0, column=7)
         self.analyze_btn = ttk.Button(controls, text="開始 AI 分析", command=self.analyze)
         self.analyze_btn.grid(row=0, column=8, padx=(14, 0))
+        self.precise_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(controls, text="精準逐字對齊（建議）", variable=self.precise_var).grid(row=1, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        self.vocals_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(controls, text="先分離人聲（較慢）", variable=self.vocals_var).grid(row=1, column=3, columnspan=3, sticky="w", pady=(8, 0))
         self.progress_var = tk.StringVar(value="等待匯入音檔")
-        ttk.Label(controls, textvariable=self.progress_var, foreground="#245a9c").grid(row=1, column=0, columnspan=10, sticky="w", pady=(8, 0))
+        ttk.Label(controls, textvariable=self.progress_var, foreground="#245a9c").grid(row=2, column=0, columnspan=10, sticky="w", pady=(8, 0))
 
         body = ttk.Frame(self, padding=(14, 6))
         body.grid(row=2, column=0, sticky="nsew")
@@ -313,9 +337,23 @@ class LyricsSrtApp(tk.Tk):
         self.analyze_btn.configure(state="disabled")
         self.progress_var.set("正在載入本機模型並轉錄，首次使用會下載模型…")
         reference = list(self.reference_lyrics)
-        threading.Thread(target=self._run_transcription, args=(self.audio_path, self.model_var.get(), self.language_var.get(), self.device_var.get(), min_gap, reference), daemon=True).start()
+        threading.Thread(target=self._run_transcription, args=(self.audio_path, self.model_var.get(), self.language_var.get(), self.device_var.get(), min_gap, reference, self.precise_var.get(), self.vocals_var.get()), daemon=True).start()
 
-    def _run_transcription(self, path: Path, model_name: str, language: str, device_choice: str, min_gap: float, reference: list[str]) -> None:
+    def _separate_vocals(self, path: Path) -> tuple[Path, Path | None]:
+        """用 Demucs 建立人聲軌；回傳暫存目錄供呼叫端清理。"""
+        ensure_optional_package("demucs", "demucs>=4.0.1", lambda text: self.events.put(("status", text)))
+        from demucs.separate import main as demucs_main
+        output_dir = Path(tempfile.mkdtemp(prefix="lyrics_srt_demucs_"))
+        self.events.put(("status", "正在分離人聲與伴奏，首次使用會下載 Demucs 模型…"))
+        demucs_main(["--two-stems", "vocals", "-n", "htdemucs", "-o", str(output_dir), str(path)])
+        vocal_path = output_dir / "htdemucs" / path.stem / "vocals.wav"
+        if not vocal_path.exists():
+            shutil.rmtree(output_dir, ignore_errors=True)
+            raise RuntimeError("人聲分離沒有產生 vocals.wav。")
+        return vocal_path, output_dir
+
+    def _run_transcription(self, path: Path, model_name: str, language: str, device_choice: str, min_gap: float, reference: list[str], precise: bool, separate_vocals: bool) -> None:
+        temporary_dir: Path | None = None
         try:
             self._ensure_dependencies()
             from faster_whisper import WhisperModel
@@ -340,14 +378,22 @@ class LyricsSrtApp(tk.Tk):
                 else:
                     self.events.put(("status", f"GPU 暫時不可用，已改用 CPU：{gpu_error}"))
                     model = WhisperModel(model_name, device="cpu", compute_type="int8")
-            raw, _ = model.transcribe(str(path), language=None if language == "auto" else language, vad_filter=True, condition_on_previous_text=False, beam_size=5)
-            recognized = normalize_lyrics(list(raw))
-            lyrics = align_reference_lyrics(reference, recognized, self.duration) if reference else recognized
+            source_path = path
+            if separate_vocals:
+                source_path, temporary_dir = self._separate_vocals(path)
+            raw, _ = model.transcribe(str(source_path), language=None if language == "auto" else language, vad_filter=True, condition_on_previous_text=False, beam_size=5, word_timestamps=precise)
+            raw_segments = list(raw)
+            recognized = word_timing_anchors(raw_segments) if precise else normalize_lyrics(raw_segments)
+            lyrics = align_reference_lyrics(reference, recognized, self.duration) if reference else normalize_lyrics(raw_segments)
             if reference:
-                self.events.put(("status", f"已以 {len(reference)} 句參考歌詞取代 AI 文字，保留 AI 時間範圍。"))
+                level = "逐字" if precise and any(getattr(item, "words", None) for item in raw_segments) else "逐句"
+                self.events.put(("status", f"已以 {len(reference)} 句參考歌詞進行 {level} 節奏對齊。"))
             self.events.put(("done", add_music_markers(lyrics, self.duration, min_gap)))
         except Exception as exc:
             self.events.put(("error", str(exc)))
+        finally:
+            if temporary_dir:
+                shutil.rmtree(temporary_dir, ignore_errors=True)
 
     def _poll_events(self) -> None:
         try:
