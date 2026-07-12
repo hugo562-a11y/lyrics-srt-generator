@@ -210,7 +210,8 @@ class LyricsSrtApp(tk.Tk):
         self.playback_started_at = 0.0
         self.playing = False
         self.playing_row: int | None = None
-        self._pygame = None
+        self._ffplay: str | None = None
+        self._audio_process: subprocess.Popen[str] | None = None
         self._build_ui()
         self.bind_all("<Control-z>", self.undo)
         self.bind_all("<Control-y>", self.redo)
@@ -343,25 +344,23 @@ class LyricsSrtApp(tk.Tk):
         self.refresh_tree()
 
     def _load_audio_backend(self) -> None:
-        try:
-            ensure_optional_package("pygame", "pygame>=2.6.1", lambda text: self.events.put(("status", text)))
-            import pygame
-            pygame.mixer.init()
-            self.events.put(("audio_ready", pygame))
-        except Exception as exc:
-            self.events.put(("audio_error", str(exc)))
+        ffplay = shutil.which("ffplay")
+        if ffplay:
+            self.events.put(("audio_ready", ffplay))
+        else:
+            self.events.put(("audio_error", "找不到 FFmpeg 的 ffplay.exe。請安裝 FFmpeg 並加入 PATH 後重新啟動程式。"))
 
     def toggle_playback(self) -> None:
         if not self.audio_path:
             messagebox.showinfo(APP_TITLE, "請先匯入音檔。")
             return
-        if self._pygame is None:
+        if self._ffplay is None:
             self.play_btn.configure(state="disabled")
-            self._set_progress_status("正在準備本機播放器，首次使用會自動安裝…", busy=True)
+            self._set_progress_status("正在確認本機 FFmpeg 播放器…", busy=True)
             threading.Thread(target=self._load_audio_backend, daemon=True).start()
             return
         if self.playing:
-            self._pygame.mixer.music.pause()
+            self._stop_audio_process()
             self.playback_offset += time.monotonic() - self.playback_started_at
             self.playing = False
             self.play_btn.configure(text="▶ 繼續")
@@ -369,12 +368,16 @@ class LyricsSrtApp(tk.Tk):
             self._start_playback(float(self.play_slider.get()))
 
     def _start_playback(self, offset: float) -> None:
-        if not self._pygame or not self.audio_path:
+        if not self._ffplay or not self.audio_path:
             return
         offset = min(max(0.0, offset), max(0.0, self.duration - 0.01))
         try:
-            self._pygame.mixer.music.load(str(self.audio_path))
-            self._pygame.mixer.music.play(start=offset)
+            self._stop_audio_process()
+            self._audio_process = subprocess.Popen(
+                [self._ffplay, "-nodisp", "-autoexit", "-loglevel", "error", "-ss", str(offset), str(self.audio_path)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
         except Exception as exc:
             messagebox.showerror(APP_TITLE, f"無法播放此音檔：\n{exc}")
             return
@@ -383,9 +386,13 @@ class LyricsSrtApp(tk.Tk):
         self.playing = True
         self.play_btn.configure(text="❚❚ 暫停")
 
+    def _stop_audio_process(self) -> None:
+        if self._audio_process and self._audio_process.poll() is None:
+            self._audio_process.terminate()
+        self._audio_process = None
+
     def stop_playback(self) -> None:
-        if self._pygame:
-            self._pygame.mixer.music.stop()
+        self._stop_audio_process()
         self.playing = False
         self.playback_offset = 0.0
         self.playing_row = None
@@ -406,7 +413,7 @@ class LyricsSrtApp(tk.Tk):
     def _update_playback(self) -> None:
         if self.playing:
             current = self.playback_offset + time.monotonic() - self.playback_started_at
-            if current >= self.duration or not self._pygame.mixer.music.get_busy():
+            if current >= self.duration or (self._audio_process is not None and self._audio_process.poll() is not None):
                 self.stop_playback()
             else:
                 self.play_slider.set(current)
@@ -517,7 +524,7 @@ class LyricsSrtApp(tk.Tk):
                     self._set_progress_status("必要套件安裝失敗", busy=False)
                     messagebox.showerror(APP_TITLE, f"無法完成自動安裝：\n{payload}")
                 elif event == "audio_ready":
-                    self._pygame = payload
+                    self._ffplay = str(payload)
                     self.play_btn.configure(state="normal")
                     self._set_progress_status("播放器已就緒。按播放即可同步檢查每一句。", busy=False)
                     self._start_playback(float(self.play_slider.get()))
