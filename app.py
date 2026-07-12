@@ -145,6 +145,10 @@ def align_reference_lyrics(reference_lines: list[str], recognized: list[Segment]
         step = duration / len(reference_lines) if reference_lines and duration else 1.0
         return [Segment(i * step, min(duration, (i + 1) * step), LYRIC_KIND, text) for i, text in enumerate(reference_lines)]
 
+    # 唱腔常使辨識文字與正確歌詞不完全一致。以平均每個時間錨點涵蓋的字數
+    # 推算合理句長，避免文字相似度失準時一次吃掉太多（或太少）後續錨點。
+    anchor_lengths = [max(1, len(_comparison_text(item.text))) for item in recognized]
+    average_chars_per_anchor = max(1.0, sum(anchor_lengths) / len(anchor_lengths))
     result: list[Segment] = []
     anchor = 0
     for line_index, line in enumerate(reference_lines):
@@ -158,10 +162,13 @@ def align_reference_lyrics(reference_lines: list[str], recognized: list[Segment]
         # 逐字模式可合併較多錨點；仍保留足夠項目給後面的歌詞行。
         max_end = min(len(recognized) - (remaining_lines - 1), anchor + max_span)
         wanted = _comparison_text(line)
+        expected_span = max(1, round(max(1, len(wanted)) / average_chars_per_anchor))
         best_end, best_score = anchor + 1, -1.0
         for end in range(anchor + 1, max_end + 1):
             heard = _comparison_text("".join(item.text for item in recognized[anchor:end]))
-            score = difflib.SequenceMatcher(None, wanted, heard).ratio() - 0.008 * abs(len(heard) - len(wanted))
+            text_score = difflib.SequenceMatcher(None, wanted, heard).ratio()
+            length_penalty = 0.018 * abs((end - anchor) - expected_span)
+            score = text_score - length_penalty
             if score > best_score:
                 best_end, best_score = end, score
         result.append(Segment(recognized[anchor].start, recognized[best_end - 1].end, LYRIC_KIND, line))
@@ -500,7 +507,9 @@ class LyricsSrtApp(tk.Tk):
             if separate_vocals:
                 source_path, temporary_dir = self._separate_vocals(path)
             self.events.put(("status", "正在分析音訊與逐字時間點，請稍候…"))
-            raw, _ = model.transcribe(str(source_path), language=None if language == "auto" else language, vad_filter=True, condition_on_previous_text=False, beam_size=5, word_timestamps=precise)
+            # 歌曲拖音與伴奏很容易被一般語音 VAD 當成靜音切掉，尤其是後半段。
+            # 提供正確歌詞時以完整音檔對齊，避免錨點在歌曲尚未結束前耗盡。
+            raw, _ = model.transcribe(str(source_path), language=None if language == "auto" else language, vad_filter=not bool(reference), condition_on_previous_text=False, beam_size=5, word_timestamps=precise)
             raw_segments = list(raw)
             recognized = word_timing_anchors(raw_segments) if precise else normalize_lyrics(raw_segments)
             lyrics = align_reference_lyrics(reference, recognized, self.duration) if reference else normalize_lyrics(raw_segments)
