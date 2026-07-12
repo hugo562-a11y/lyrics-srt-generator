@@ -12,7 +12,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Iterable
 
-from bootstrap import add_nvidia_dll_paths, ensure_required_packages, install_gpu_runtime
+from bootstrap import add_nvidia_dll_paths, ensure_required_packages, gpu_runtime_ready, install_gpu_runtime
 
 
 APP_TITLE = "歌詞 SRT 產生器"
@@ -240,6 +240,9 @@ class LyricsSrtApp(tk.Tk):
                 if not use_gpu:
                     raise RuntimeError("使用者選擇 CPU")
                 add_nvidia_dll_paths()
+                if not gpu_runtime_ready():
+                    self.events.put(("status", "偵測到 CUDA 執行庫不完整，正在自動下載所需 DLL…"))
+                    install_gpu_runtime(lambda text: self.events.put(("status", text)))
                 model = WhisperModel(model_name, device="cuda", compute_type="float16")
                 self.events.put(("status", "已使用 NVIDIA GPU 加速。"))
             except Exception as gpu_error:

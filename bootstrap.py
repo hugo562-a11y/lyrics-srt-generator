@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 import sysconfig
@@ -61,3 +62,9 @@ def install_gpu_runtime(status: Status) -> None:
     """下載 CTranslate2 在 CUDA 12 下所需的 cublas/cudnn wheel。"""
     _pip_install(list(GPU_PACKAGES), status)
     add_nvidia_dll_paths()
+
+
+def gpu_runtime_ready() -> bool:
+    """確認 CTranslate2 的 CUDA 12 執行期 DLL 都可被目前行程找到。"""
+    add_nvidia_dll_paths()
+    return bool(shutil.which("cublas64_12.dll") and shutil.which("cudnn64_9.dll"))
