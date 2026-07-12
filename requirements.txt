@@ -1,0 +1,7 @@
+faster-whisper>=1.1.0
+soundfile>=0.12.1
+numpy>=1.26.0
+
+# Optional NVIDIA GPU acceleration is downloaded automatically only when needed:
+# nvidia-cublas-cu12
+# nvidia-cudnn-cu12

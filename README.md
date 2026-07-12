@@ -1,0 +1,41 @@
+# 歌詞 SRT 產生器
+
+Windows 桌面工具：匯入音檔，以本機 AI 模型轉成帶時間的歌詞，補上前奏／間奏／尾奏標記，並輸出 SRT。
+
+## 安裝
+
+需要 Python 3.10 以上。首次開啟程式會檢查 `faster-whisper`、`soundfile`、`numpy`，缺少時會自動下載安裝；本機模型會在第一次分析時下載，之後可離線使用。
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python app.py
+```
+
+Windows 使用者可直接雙擊 `run.bat`，它會建立專案專用的 `.venv` 環境並啟動程式。
+
+## GPU（選用）
+
+預設是「自動（GPU 優先）」。程式會先嘗試 NVIDIA GPU；無法使用時會自動回退 CPU，不會中斷分析。選擇「GPU」時，若發現 CUDA 12 的 `cublas` / `cudnn` DLL 缺少，會自動從 PyPI 安裝對應 NVIDIA 執行庫並重試。
+
+若要發佈免安裝 Python 的 Windows 版本，在已完成首次啟動後執行 `build_exe.bat`；輸出於 `dist\LyricsSrtGenerator\`。請一併發佈整個資料夾，而不是只發佈 EXE。
+
+若音檔格式無法讀取，請安裝並加入 PATH：[FFmpeg](https://ffmpeg.org/download.html)。
+
+## 使用方式
+
+1. 按「匯入音檔」。
+2. 選擇模型與語言（中文歌曲建議 `large-v3` 或 `medium`；較快可選 `small`）。
+3. 按「開始 AI 分析」。模型在本機執行，會列出每句歌詞與音樂區段。
+4. 可直接雙擊表格中的開始、結束、類型或文字修改；選取一列可用工具列新增或刪除。`Ctrl+Z` / `Ctrl+Y` 可復原／重做。
+5. 按「匯出 SRT」。
+
+## 標記規則
+
+- 第一個歌詞前：`[前奏]`
+- 歌詞句與句間的音樂空檔：`[間奏]`
+- 最後一句後：`[尾奏]`
+- 較短的呼吸／停頓不會產生 SRT 項目；可在介面調整「最短音樂段」。
+
+SRT 是 `HH:MM:SS,mmm` 規格，因此第一筆從 `00:00:00,000`（等同所要求的 `00:00:00:00` 起點）開始。
