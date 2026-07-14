@@ -15,6 +15,7 @@ REQUIRED_PACKAGES = {
     "faster_whisper": "faster-whisper>=1.1.0",
     "soundfile": "soundfile>=0.12.1",
     "numpy": "numpy>=1.26.0",
+    "PIL": "Pillow>=10.0.0",
 }
 GPU_PACKAGES = ("nvidia-cublas-cu12", "nvidia-cudnn-cu12")
 Status = Callable[[str], None]

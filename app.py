@@ -1,4 +1,4 @@
-"""本機歌詞辨識、音樂段標記與 SRT 匯出工具。"""
+"""本機歌詞辨識、音樂段標記與 SRT／動態透明字幕匯出工具。"""
 from __future__ import annotations
 
 import copy
@@ -14,7 +14,7 @@ import time
 import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import colorchooser, filedialog, messagebox, ttk
 from typing import Iterable
 
 from bootstrap import add_nvidia_dll_paths, ensure_optional_package, ensure_required_packages, gpu_runtime_ready, install_gpu_runtime
@@ -25,6 +25,13 @@ MUSIC_KIND = "音樂"
 LYRIC_KIND = "歌詞"
 SUPPORTED_AUDIO = [("音檔", "*.mp3 *.wav *.m4a *.flac *.aac *.ogg"), ("所有檔案", "*.*")]
 SUPPORTED_LYRICS = [("歌詞文字檔", "*.txt *.lrc"), ("所有檔案", "*.*")]
+PNG_ASPECTS = {
+    "16:9（1920×1080）": (1920, 1080),
+    "9:16（1080×1920）": (1080, 1920),
+    "1:1（1080×1080）": (1080, 1080),
+    "4:3（1440×1080）": (1440, 1080),
+}
+PNG_ANIMATION_STYLES = ("逐字點亮", "彈跳聚焦", "滑入淡出", "電影柔和")
 
 # 深色介面色票，比照主流影音剪輯工具（Premiere／DaVinci）的暗色風格。
 DARK_BG = "#1e1f22"
@@ -536,8 +543,8 @@ class LyricsSrtApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title(APP_TITLE)
-        self.geometry("1080x780")
-        self.minsize(860, 600)
+        self.geometry("1360x960")
+        self.minsize(1150, 760)
         self.audio_path: Path | None = None
         self.duration = 0.0
         self.reference_lyrics: list[str] = []
@@ -555,6 +562,15 @@ class LyricsSrtApp(tk.Tk):
         self.play_stop_at: float | None = None
         self._ffplay: str | None = None
         self._audio_process: subprocess.Popen[str] | None = None
+        self.preview_image_label: tk.Label | None = None
+        self.preview_photo: object | None = None
+        self.subtitle_font_size_var = tk.IntVar(value=64)
+        self.subtitle_text_color = "#f6f7f4"
+        self.subtitle_outline_color = "#100c09"
+        self.subtitle_valign_var = tk.StringVar(value="下方")
+        self.subtitle_halign_var = tk.StringVar(value="置中")
+        self.subtitle_offset_x_var = tk.DoubleVar(value=0.0)
+        self.subtitle_offset_y_var = tk.DoubleVar(value=0.0)
         self._build_ui()
         self._apply_dark_titlebar()
         self.bind_all("<Control-z>", self.undo)
@@ -667,6 +683,7 @@ class LyricsSrtApp(tk.Tk):
         body = ttk.Frame(self, padding=(14, 6))
         body.grid(row=3, column=0, sticky="nsew")
         body.columnconfigure(0, weight=1)
+        body.columnconfigure(2, weight=0)
         body.rowconfigure(0, weight=1)
         columns = ("start", "end", "kind", "text")
         self.tree = ttk.Treeview(body, columns=columns, show="headings", selectmode="browse")
@@ -679,6 +696,11 @@ class LyricsSrtApp(tk.Tk):
         self.tree.configure(yscrollcommand=scroll.set)
         self.tree.bind("<ButtonRelease-1>", self.play_clicked_row)
         self.tree.bind("<Double-1>", self._begin_edit)
+
+        preview_panel = ttk.LabelFrame(body, text="字幕預覽（跟隨主播放器）", padding=8)
+        preview_panel.grid(row=0, column=2, sticky="n", padx=(12, 0))
+        self.preview_image_label = tk.Label(preview_panel, background="#08090b", bd=1, relief="solid")
+        self.preview_image_label.pack()
 
         bottom = ttk.Frame(self, padding=(14, 6, 14, 14))
         bottom.grid(row=4, column=0, sticky="ew")
@@ -693,10 +715,59 @@ class LyricsSrtApp(tk.Tk):
         ttk.Button(bottom, text="▶ 只播選取句", command=lambda: self.play_selected_segment(only_segment=True)).pack(side="left", padx=(0, 14))
         ttk.Button(bottom, text="＋ 新增列", command=self.add_segment).pack(side="left")
         ttk.Button(bottom, text="刪除／還原", command=self.toggle_deleted).pack(side="left", padx=6)
+        ttk.Button(bottom, text="✂ 在此斷句", command=self.split_at_playhead).pack(side="left", padx=(6, 0))
         ttk.Button(bottom, text="復原", command=self.undo).pack(side="left", padx=(18, 0))
         ttk.Button(bottom, text="重做", command=self.redo).pack(side="left", padx=6)
         ttk.Label(bottom, text="雙擊欄位可修改；時間格式：00:00:00:00", foreground=DARK_MUTED_FG).pack(side="left", padx=18)
-        ttk.Button(bottom, text="匯出 SRT", command=self.export_srt).pack(side="right")
+
+        caption_export = ttk.LabelFrame(self, text="字幕樣式與匯出", padding=(10, 8))
+        caption_export.grid(row=5, column=0, sticky="ew", padx=14, pady=(0, 12))
+        style_row = ttk.Frame(caption_export)
+        style_row.pack(fill="x")
+        self.png_aspect_var = tk.StringVar(value="16:9（1920×1080）")
+        ttk.Label(style_row, text="比例").pack(side="left", padx=(0, 4))
+        aspect_combo = ttk.Combobox(style_row, textvariable=self.png_aspect_var, state="readonly", width=16, values=tuple(PNG_ASPECTS))
+        aspect_combo.pack(side="left", padx=(0, 12))
+        aspect_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_preview())
+        self.png_animation_var = tk.StringVar(value="逐字點亮")
+        ttk.Label(style_row, text="動畫").pack(side="left", padx=(0, 4))
+        animation_combo = ttk.Combobox(style_row, textvariable=self.png_animation_var, state="readonly", width=10, values=PNG_ANIMATION_STYLES)
+        animation_combo.pack(side="left", padx=(0, 12))
+        animation_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_preview())
+        ttk.Label(style_row, text="字級").pack(side="left", padx=(0, 4))
+        size_spin = ttk.Spinbox(style_row, from_=24, to=160, increment=2, textvariable=self.subtitle_font_size_var, width=5, command=self._refresh_preview)
+        size_spin.pack(side="left", padx=(0, 12))
+        size_spin.bind("<KeyRelease>", lambda _event: self._refresh_preview())
+        self.text_color_btn = tk.Button(style_row, text="文字顏色", width=8, command=self._pick_text_color,
+                                         background=self.subtitle_text_color, activebackground=self.subtitle_text_color)
+        self.text_color_btn.pack(side="left", padx=(0, 8))
+        self.outline_color_btn = tk.Button(style_row, text="外框顏色", width=8, command=self._pick_outline_color,
+                                            background=self.subtitle_outline_color, activebackground=self.subtitle_outline_color,
+                                            foreground="#ffffff", activeforeground="#ffffff")
+        self.outline_color_btn.pack(side="left")
+
+        position_row = ttk.Frame(caption_export)
+        position_row.pack(fill="x", pady=(8, 0))
+        ttk.Label(position_row, text="垂直位置").pack(side="left", padx=(0, 4))
+        valign_combo = ttk.Combobox(position_row, textvariable=self.subtitle_valign_var, state="readonly", width=6, values=("上方", "中間", "下方"))
+        valign_combo.pack(side="left", padx=(0, 12))
+        valign_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_preview())
+        ttk.Label(position_row, text="水平位置").pack(side="left", padx=(0, 4))
+        halign_combo = ttk.Combobox(position_row, textvariable=self.subtitle_halign_var, state="readonly", width=6, values=("靠左", "置中", "靠右"))
+        halign_combo.pack(side="left", padx=(0, 12))
+        halign_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_preview())
+        ttk.Label(position_row, text="左右偏移").pack(side="left", padx=(0, 4))
+        ttk.Scale(position_row, from_=-0.4, to=0.4, variable=self.subtitle_offset_x_var, length=110, command=lambda _v: self._refresh_preview()).pack(side="left", padx=(0, 12))
+        ttk.Label(position_row, text="上下偏移").pack(side="left", padx=(0, 4))
+        ttk.Scale(position_row, from_=-0.4, to=0.4, variable=self.subtitle_offset_y_var, length=110, command=lambda _v: self._refresh_preview()).pack(side="left")
+
+        action_row = ttk.Frame(caption_export)
+        action_row.pack(fill="x", pady=(10, 0))
+        self.karaoke_btn = ttk.Button(action_row, text="匯出人聲／伴奏（卡拉OK）", command=self.export_karaoke_stems)
+        self.karaoke_btn.pack(side="left")
+        self.png_export_btn = ttk.Button(action_row, text="匯出動態 PNG（透明）", command=self.export_dynamic_png)
+        self.png_export_btn.pack(side="right", padx=(8, 0))
+        ttk.Button(action_row, text="匯出 SRT", command=self.export_srt).pack(side="right")
 
     def _check_dependencies_async(self) -> None:
         self._set_progress_status("正在確認必要套件（已安裝時不會下載）…", busy=True)
@@ -910,6 +981,7 @@ class LyricsSrtApp(tk.Tk):
                 self.play_slider.set(current)
                 self.play_time_var.set(format_timecode(current))
                 self.waveform.set_playhead(current, follow=True)
+                self._refresh_preview(current)
                 active = next((i for i, item in enumerate(self.segments) if not item.deleted and item.start <= current <= item.end), None)
                 if active != self.playing_row:
                     self.playing_row = active
@@ -918,6 +990,8 @@ class LyricsSrtApp(tk.Tk):
                         self.tree.selection_set(str(active))
                         self.tree.focus(str(active))
                         self.tree.see(str(active))
+        else:
+            self._refresh_preview()
         self.after(75, self._update_playback)
 
     def import_lyrics(self) -> None:
@@ -1052,6 +1126,23 @@ class LyricsSrtApp(tk.Tk):
                         self.waveform.set_audio(self.duration, samples)
                 elif event == "waveform_error":
                     self._set_progress_status(f"聲波顯示無法產生（不影響其他功能）：{payload}", busy=False)
+                elif event == "png_done":
+                    output, frames = payload
+                    self.png_export_btn.configure(state="normal")
+                    self._set_progress_status(f"已輸出 {frames:,} 張透明 PNG：{output}", busy=False)
+                    messagebox.showinfo(APP_TITLE, f"動態字幕 PNG 序列已完成。\n\n{output}\n\n規格：透明 RGBA、30 fps、可直接以影像序列匯入剪輯軟體。")
+                elif event == "png_error":
+                    self.png_export_btn.configure(state="normal")
+                    self._set_progress_status("動態 PNG 匯出失敗", busy=False)
+                    messagebox.showerror(APP_TITLE, f"無法輸出動態字幕 PNG：\n{payload}")
+                elif event == "karaoke_done":
+                    self.karaoke_btn.configure(state="normal")
+                    self._set_progress_status(f"已輸出人聲／伴奏：{payload}", busy=False)
+                    messagebox.showinfo(APP_TITLE, f"卡拉OK人聲／伴奏分軌已完成。\n\n{payload}")
+                elif event == "karaoke_error":
+                    self.karaoke_btn.configure(state="normal")
+                    self._set_progress_status("人聲／伴奏分軌失敗", busy=False)
+                    messagebox.showerror(APP_TITLE, f"無法輸出人聲／伴奏：\n{payload}")
         except queue.Empty:
             pass
         self.after(120, self._poll_events)
@@ -1152,6 +1243,163 @@ class LyricsSrtApp(tk.Tk):
                 handle.write(f"{number}\n{srt_timecode(item.start)} --> {srt_timecode(item.end)}\n{item.text}\n\n")
         self._set_progress_status(f"已匯出：{output}", busy=False)
         messagebox.showinfo(APP_TITLE, "SRT 匯出完成。")
+
+    def export_dynamic_png(self) -> None:
+        """以目前表格（含使用者手動校正後的時間）輸出透明動態字幕序列。"""
+        active = [item for item in self.segments if not item.deleted and item.kind == LYRIC_KIND and item.text.strip()]
+        if not active:
+            messagebox.showinfo(APP_TITLE, "沒有可輸出的歌詞。請先完成 AI 分析，或新增歌詞列。")
+            return
+        if not self.duration:
+            messagebox.showinfo(APP_TITLE, "請先匯入音檔，才能取得完整序列的時間長度。")
+            return
+        parent = filedialog.askdirectory(title="選擇動態字幕 PNG 序列的儲存位置")
+        if not parent:
+            return
+        width, height = PNG_ASPECTS[self.png_aspect_var.get()]
+        stem = self.audio_path.stem if self.audio_path else "lyrics"
+        output = Path(parent) / f"{stem}_動態字幕PNG_{width}x{height}_30fps"
+        if output.exists() and any(output.iterdir()):
+            messagebox.showerror(APP_TITLE, f"輸出資料夾已存在且不是空的：\n{output}\n\n請選擇其他位置，避免覆蓋既有影格。")
+            return
+        self.png_export_btn.configure(state="disabled")
+        self._set_progress_status("正在準備動態字幕 PNG 匯出…", busy=True)
+        # 複製時間軸資料，讓輸出期間仍可安全操作或繼續校正 UI。
+        snapshot = copy.deepcopy(active)
+        style = self.png_animation_var.get()
+        subtitle_style = self._current_subtitle_style()
+        threading.Thread(target=self._run_dynamic_png_export, args=(snapshot, output, width, height, style, subtitle_style), daemon=True).start()
+
+    def _run_dynamic_png_export(self, segments: list[Segment], output: Path, width: int, height: int, style: str, subtitle_style: object) -> None:
+        try:
+            # 延後載入，首次啟動時讓 bootstrap 有機會自動安裝 Pillow。
+            from subtitle_png_renderer import render_sequence
+            frames = render_sequence(segments, self.audio_path, self.duration, output, width, height, 30,
+                                     lambda text: self.events.put(("status", text)), style, subtitle_style)
+            self.events.put(("png_done", (output, frames)))
+        except Exception as exc:
+            self.events.put(("png_error", str(exc)))
+
+    @staticmethod
+    def _hex_to_rgb(value: str) -> tuple[int, int, int]:
+        value = value.lstrip("#")
+        return (int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16))
+
+    def _current_subtitle_style(self):
+        from subtitle_png_renderer import SubtitleStyle
+        valign_map = {"上方": "top", "中間": "middle", "下方": "bottom"}
+        halign_map = {"靠左": "left", "置中": "center", "靠右": "right"}
+        return SubtitleStyle(
+            font_size=int(self.subtitle_font_size_var.get()),
+            text_color=self._hex_to_rgb(self.subtitle_text_color),
+            outline_color=self._hex_to_rgb(self.subtitle_outline_color),
+            valign=valign_map.get(self.subtitle_valign_var.get(), "bottom"),
+            halign=halign_map.get(self.subtitle_halign_var.get(), "center"),
+            offset_x=self.subtitle_offset_x_var.get(),
+            offset_y=self.subtitle_offset_y_var.get(),
+        )
+
+    def _pick_text_color(self) -> None:
+        color = colorchooser.askcolor(color=self.subtitle_text_color, title="選擇文字顏色")[1]
+        if color:
+            self.subtitle_text_color = color
+            self.text_color_btn.configure(background=color, activebackground=color)
+            self._refresh_preview()
+
+    def _pick_outline_color(self) -> None:
+        color = colorchooser.askcolor(color=self.subtitle_outline_color, title="選擇外框顏色")[1]
+        if color:
+            self.subtitle_outline_color = color
+            self.outline_color_btn.configure(background=color, activebackground=color)
+            self._refresh_preview()
+
+    def _preview_dimensions(self) -> tuple[int, int]:
+        width, height = PNG_ASPECTS[self.png_aspect_var.get()]
+        scale = min(300 / width, 220 / height)
+        return max(2, int(width * scale)), max(2, int(height * scale))
+
+    def _refresh_preview(self, now: float | None = None) -> None:
+        """依目前主播放位置重繪內嵌字幕預覽；不寫檔、不影響時間軸。
+
+        `now` 由 `_update_playback` 在播放中傳入即時內插時間；其餘呼叫（拖曳、選取、
+        改樣式）不傳時間，直接使用 `self.playback_offset`（暫停/拖曳後的固定位置）。
+        """
+        if not self.preview_image_label or not self.preview_image_label.winfo_exists():
+            return
+        try:
+            from PIL import ImageTk  # Pillow 由 bootstrap 於首次啟動安裝，尚未就緒時直接跳過。
+            from subtitle_png_renderer import render_preview_frame
+        except ImportError:
+            return
+        try:
+            preview_time = self.playback_offset if now is None else now
+            active = [item for item in self.segments if not item.deleted and item.kind == LYRIC_KIND and item.text.strip()]
+            width, height = self._preview_dimensions()
+            image = render_preview_frame(active, preview_time, width, height, self.png_animation_var.get(), self._current_subtitle_style())
+            self.preview_photo = ImageTk.PhotoImage(image)
+            self.preview_image_label.configure(image=self.preview_photo, width=width, height=height)
+        except Exception:
+            pass  # 預覽是輔助功能，繪製失敗不應打斷主要編輯流程。
+
+    def split_at_playhead(self) -> None:
+        """把選取的歌詞句在目前播放頭位置切成兩句，文字依時間比例自動分配字數。"""
+        idx = self.selected_index()
+        if idx is None:
+            messagebox.showinfo(APP_TITLE, "請先選取一句歌詞。")
+            return
+        segment = self.segments[idx]
+        t = self.playback_offset
+        if segment.kind != LYRIC_KIND:
+            messagebox.showinfo(APP_TITLE, "只能斷開歌詞句，音樂標記無法斷句。")
+            return
+        if not (segment.start < t < segment.end):
+            messagebox.showinfo(APP_TITLE, "請先把播放頭（點聲波時間尺或拖曳滑桿）移到選取句子中間要斷開的位置。")
+            return
+        self.push_undo("斷句")
+        text = segment.text
+        fraction = (t - segment.start) / (segment.end - segment.start)
+        split_index = max(1, min(len(text) - 1, round(len(text) * fraction))) if len(text) > 1 else 1
+        first_text, second_text = text[:split_index] or text, text[split_index:] or text
+        first = Segment(segment.start, t, LYRIC_KIND, first_text)
+        second = Segment(t, segment.end, LYRIC_KIND, second_text)
+        self.segments[idx:idx + 1] = [first, second]
+        self.refresh_tree()
+        self.tree.selection_set(str(idx))
+        self.tree.see(str(idx))
+
+    def export_karaoke_stems(self) -> None:
+        """用 Demucs 把音檔分成人聲／伴奏兩個 WAV 檔，供卡拉OK版本使用。"""
+        if not self.audio_path:
+            messagebox.showinfo(APP_TITLE, "請先匯入音檔。")
+            return
+        parent = filedialog.askdirectory(title="選擇人聲／伴奏 WAV 的儲存位置")
+        if not parent:
+            return
+        stem = self.audio_path.stem
+        output = Path(parent) / f"{stem}_卡拉OK分軌"
+        if output.exists() and any(output.iterdir()):
+            messagebox.showerror(APP_TITLE, f"輸出資料夾已存在且不是空的：\n{output}\n\n請選擇其他位置。")
+            return
+        self.karaoke_btn.configure(state="disabled")
+        self._set_progress_status("正在分離人聲與伴奏，首次使用會下載 Demucs 模型…", busy=True)
+        threading.Thread(target=self._run_karaoke_export, args=(self.audio_path, output), daemon=True).start()
+
+    def _run_karaoke_export(self, path: Path, output: Path) -> None:
+        temporary_dir: Path | None = None
+        try:
+            self._ensure_dependencies()
+            vocal_path, temporary_dir = self._separate_vocals(path)
+            accompaniment_path = vocal_path.parent / "no_vocals.wav"
+            output.mkdir(parents=True, exist_ok=True)
+            shutil.copy(vocal_path, output / f"{path.stem}_人聲.wav")
+            if accompaniment_path.exists():
+                shutil.copy(accompaniment_path, output / f"{path.stem}_伴奏.wav")
+            self.events.put(("karaoke_done", output))
+        except Exception as exc:
+            self.events.put(("karaoke_error", str(exc)))
+        finally:
+            if temporary_dir:
+                shutil.rmtree(temporary_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
