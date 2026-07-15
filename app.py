@@ -668,6 +668,7 @@ class LyricsSrtApp(tk.Tk):
         self.option_add("*TCombobox*Listbox.selectBackground", DARK_ACCENT)
         self.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
         self.columnconfigure(0, weight=1)
+        self.columnconfigure(1, weight=0)
         self.rowconfigure(3, weight=1)
 
         top = ttk.Frame(self, padding=(14, 12, 14, 6))
@@ -730,28 +731,24 @@ class LyricsSrtApp(tk.Tk):
         body.grid(row=3, column=0, sticky="nsew")
         body.columnconfigure(0, weight=1)
         body.rowconfigure(0, weight=1)
-
-        body_pane = ttk.PanedWindow(body, orient="horizontal")
-        body_pane.grid(row=0, column=0, sticky="nsew")
-
-        tree_frame = ttk.Frame(body_pane)
         columns = ("start", "end", "kind", "text")
-        self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", selectmode="browse")
+        self.tree = ttk.Treeview(body, columns=columns, show="headings", selectmode="browse")
         for key, title, width in (("start", "開始", 140), ("end", "結束", 140), ("kind", "類型", 90), ("text", "文字／標記", 460)):
             self.tree.heading(key, text=title)
             self.tree.column(key, width=width, anchor="center" if key != "text" else "w", stretch=key == "text")
-        self.tree.pack(side="left", fill="both", expand=True)
-        scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
-        scroll.pack(side="right", fill="y")
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        scroll = ttk.Scrollbar(body, orient="vertical", command=self.tree.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
         self.tree.configure(yscrollcommand=scroll.set)
         self.tree.bind("<ButtonRelease-1>", self.play_clicked_row)
         self.tree.bind("<Double-1>", self._begin_edit)
-        body_pane.add(tree_frame, weight=3)
 
-        preview_panel = ttk.LabelFrame(body_pane, text="字幕預覽（跟隨主播放器）", padding=8)
+        preview_panel = ttk.LabelFrame(self, text="字幕預覽", padding=8)
+        preview_panel.grid(row=0, column=1, rowspan=6, sticky="nsew", padx=(4, 14), pady=(12, 12))
+        preview_panel.rowconfigure(0, weight=1)
+        preview_panel.columnconfigure(0, weight=1)
         self.preview_image_label = tk.Label(preview_panel, background="#08090b", bd=1, relief="solid")
-        self.preview_image_label.pack()
-        body_pane.add(preview_panel, weight=2)
+        self.preview_image_label.grid(row=0, column=0, sticky="nsew")
 
         bottom = ttk.Frame(self, padding=(14, 6, 14, 14))
         bottom.grid(row=4, column=0, sticky="ew")
@@ -1520,7 +1517,7 @@ class LyricsSrtApp(tk.Tk):
 
     def _preview_dimensions(self) -> tuple[int, int]:
         width, height = PNG_ASPECTS[self.png_aspect_var.get()]
-        scale = min(520 / width, 380 / height)
+        scale = min(480 / width, 700 / height)
         return max(2, int(width * scale)), max(2, int(height * scale))
 
     def _refresh_preview(self, now: float | None = None) -> None:
