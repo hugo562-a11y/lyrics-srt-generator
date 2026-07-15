@@ -773,6 +773,7 @@ class LyricsSrtApp(tk.Tk):
         self.preview_image_label.bind("<MouseWheel>", self._on_preview_scroll)
         self.preview_image_label.bind("<Button-4>", self._on_preview_scroll)
         self.preview_image_label.bind("<Button-5>", self._on_preview_scroll)
+        self._preview_resize_id = self.preview_image_label.bind("<Configure>", lambda _e: self._refresh_preview())
 
         style_frame = ttk.LabelFrame(right, text=" 字幕樣式 ", padding=(10, 8))
         style_frame.grid(row=1, column=0, sticky="ew")
@@ -1590,6 +1591,11 @@ class LyricsSrtApp(tk.Tk):
             self._refresh_preview()
 
     def _preview_dimensions(self) -> tuple[int, int]:
+        if self.preview_image_label and self.preview_image_label.winfo_exists():
+            pw = self.preview_image_label.winfo_width()
+            ph = self.preview_image_label.winfo_height()
+            if pw > 20 and ph > 20:
+                return pw, ph
         width, height = PNG_ASPECTS[self.png_aspect_var.get()]
         scale = min(480 / width, 700 / height)
         return max(2, int(width * scale)), max(2, int(height * scale))
@@ -1629,7 +1635,7 @@ class LyricsSrtApp(tk.Tk):
             if not self.playing and not any(s.start <= preview_time < s.end for s in active) and active:
                 image = render_preview_frame(active, active[0].start + 0.01, width, height, self.png_animation_var.get(), self._current_subtitle_style())
             self.preview_photo = ImageTk.PhotoImage(image)
-            self.preview_image_label.configure(image=self.preview_photo, width=width, height=height)
+            self.preview_image_label.configure(image=self.preview_photo)
         except Exception:
             pass  # 預覽是輔助功能，繪製失敗不應打斷主要編輯流程。
 
