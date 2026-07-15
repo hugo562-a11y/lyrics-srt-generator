@@ -132,11 +132,11 @@ def _draw(frame: Image.Image, item: object, now: float, energy: float, width: in
 
             char_progress = cursor / chars
             progress = (local - karaoke * char_progress) / (.12 / speed)
-            karaoke_reveal = _smooth(max(0.0, min(1.0, (local - karaoke * char_progress) / (.15 / speed))))
             rng = random.Random(_stable_seed(f"{text}_{cursor}"))
             char_phase = rng.random() * 0.4
+            karaoke_reveal = _smooth(max(0.0, min(1.0, (local - karaoke * char_progress) / (.15 / speed))))
 
-            alpha = int(base_alpha * karaoke_reveal)
+            alpha = base_alpha
             glow_color = (255, 194, 65)
             extra_scale = 1.0
             extra_x, extra_y = 0.0, 0.0
@@ -147,6 +147,7 @@ def _draw(frame: Image.Image, item: object, now: float, energy: float, width: in
             stroke_w = max(3, font.size // 18)
 
             if style == "逐字點亮":
+                alpha = int(base_alpha * karaoke_reveal)
                 lit = _smooth(progress)
                 active = max(0., 1 - abs(progress - .5) * 1.6)
                 if lit > .55:
@@ -157,11 +158,13 @@ def _draw(frame: Image.Image, item: object, now: float, energy: float, width: in
                 glow_alpha_mult = 0.27 + 0.25 * active * intensity
 
             elif style == "彈跳聚焦":
-                bounce = math.sin(min(local / (.18 / speed), 1) * math.pi)
-                extra_scale = 1 + .25 * bounce * intensity + energy * .05 * intensity
-                active = max(0., 1 - abs(progress - .5) * 1.6)
-                extra_y = -int(12 * bounce * intensity) if active > .3 else 0
-                glow_alpha_mult = 0.2 + 0.35 * active * intensity
+                alpha = int(base_alpha * karaoke_reveal)
+                char_bounce_t = max(0, min(1, progress))
+                bounce = math.sin(char_bounce_t * math.pi)
+                drop = max(0, 1 - char_bounce_t * 3) * 40
+                extra_scale = 1 + .3 * bounce * intensity + energy * .05 * intensity
+                extra_y = -int(drop * intensity) + int(bounce * 14 * intensity)
+                glow_alpha_mult = 0.2 + 0.4 * bounce * intensity
 
             elif style == "滑入淡出":
                 motion = height * .070
@@ -174,79 +177,92 @@ def _draw(frame: Image.Image, item: object, now: float, energy: float, width: in
                 glow_alpha_mult = 0.14
 
             elif style == "暴風雨":
+                alpha = int(base_alpha * karaoke_reveal)
+                active = max(0., 1 - abs(progress - .5) * 1.6)
                 shake_t = local * 12 * speed
-                shake_x = math.sin(shake_t + char_phase * 20) * 6 * intensity * energy
-                shake_y = math.cos(shake_t * 1.3 + char_phase * 15) * 4 * intensity * energy
+                shake_amp = 8 * active * intensity + energy * 3 * intensity
+                shake_x = math.sin(shake_t + char_phase * 20) * shake_amp
+                shake_y = math.cos(shake_t * 1.3 + char_phase * 15) * shake_amp * 0.7
                 extra_x, extra_y = int(shake_x), int(shake_y)
                 flash = max(0, math.sin(shake_t * 0.5 + char_phase * 10))
-                extra_scale = 1 + 0.18 * flash * intensity
+                extra_scale = 1 + 0.25 * flash * active * intensity
                 glow_color = (255, int(100 + 94 * flash), int(65 + 120 * flash))
-                glow_alpha_mult = 0.3 + 0.5 * flash * intensity
+                glow_alpha_mult = 0.3 + 0.6 * flash * active * intensity
                 stroke_w = max(4, font.size // 14)
 
             elif style == "脈衝擴散":
-                pulse = math.sin(min(local / (.25 / speed), 1) * math.pi)
-                ring_r = int(pulse * font.size * 1.5 * intensity)
-                extra_scale = 1 + 0.2 * pulse * intensity
-                glow_alpha_mult = 0.2 + 0.4 * pulse * intensity
+                alpha = int(base_alpha * karaoke_reveal)
+                active = max(0., 1 - abs(progress - .5) * 1.6)
+                pulse = active * math.sin(max(0, progress) * math.pi)
+                ring_r = int(pulse * font.size * 2.0 * intensity)
+                extra_scale = 1 + 0.25 * pulse * intensity
+                glow_alpha_mult = 0.2 + 0.5 * pulse * intensity
                 glow_color = (100, 180, 255)
-                # ring glow
                 if ring_r > 5:
                     ring_layer = Image.new("RGBA", frame.size, (0, 0, 0, 0))
                     cx = int(x + char_w / 2)
                     cy = int(y + font.size / 2)
                     rd = ImageDraw.Draw(ring_layer)
-                    ring_alpha = int(80 * pulse * intensity)
-                    for r_off in range(-2, 3):
+                    ring_alpha = int(100 * pulse * intensity)
+                    for r_off in range(-3, 4):
                         rd.ellipse([cx - ring_r + r_off, cy - ring_r + r_off, cx + ring_r - r_off, cy + ring_r - r_off],
-                                   outline=(100, 200, 255, max(0, ring_alpha - abs(r_off) * 15)), width=2)
+                                   outline=(100, 200, 255, max(0, ring_alpha - abs(r_off) * 12)), width=2)
                     layer.alpha_composite(ring_layer)
 
             elif style == "水波震盪":
-                wave = math.sin(local * 8 * speed + char_phase * 12) * intensity
-                wave2 = math.cos(local * 6 * speed + char_phase * 8) * intensity
-                extra_y = int(wave * 10)
-                extra_x = int(wave2 * 5)
-                extra_scale = 1 + 0.08 * abs(wave) * intensity
-                glow_alpha_mult = 0.2 + 0.15 * abs(wave)
+                alpha = int(base_alpha * karaoke_reveal)
+                active = max(0., 1 - abs(progress - .5) * 1.6)
+                wave = math.sin(progress * math.pi * 2 + char_phase * 12) * active * intensity
+                wave2 = math.cos(progress * math.pi * 1.5 + char_phase * 8) * active * intensity
+                extra_y = int(wave * 16)
+                extra_x = int(wave2 * 8)
+                extra_scale = 1 + 0.12 * abs(wave) * intensity
+                glow_alpha_mult = 0.2 + 0.25 * abs(wave)
                 glow_color = (80, 220, 255)
 
             elif style == "雷射掃過":
+                alpha = int(base_alpha * karaoke_reveal)
                 sweep_pos = (local * 2.5 * speed) % 1.5 - 0.25
                 char_pos = char_progress
                 dist = abs(sweep_pos - char_pos)
                 hit = max(0, 1 - dist * 4)
-                extra_scale = 1 + 0.3 * hit * intensity
-                extra_y = -int(8 * hit * intensity)
-                alpha = min(255, int(base_alpha * (0.4 + 0.6 * (0.3 + 0.7 * hit))))
+                extra_scale = 1 + 0.35 * hit * intensity
+                extra_y = -int(10 * hit * intensity)
+                alpha = min(255, int(base_alpha * karaoke_reveal * (0.4 + 0.6 * (0.3 + 0.7 * hit))))
                 glow_color = (255, 50, 50) if hit > 0.3 else (255, 200, 100)
-                glow_alpha_mult = 0.2 + 0.6 * hit * intensity
+                glow_alpha_mult = 0.2 + 0.7 * hit * intensity
                 stroke_w = max(4, font.size // 12) if hit > 0.3 else stroke_w
 
             elif style == "氣泡彈出":
-                pop = math.sin(min(local / (.2 / speed), 1) * math.pi * 1.2)
-                squeeze_x = 1 + 0.15 * pop * intensity
-                squeeze_y = 1 - 0.1 * pop * intensity
-                extra_scale = (1 + 0.2 * pop * intensity)
-                extra_y = -int(15 * pop * intensity * max(0, 1 - (local * 3 * speed)))
-                glow_alpha_mult = 0.2 + 0.35 * pop * intensity
+                alpha = int(base_alpha * karaoke_reveal)
+                pop_t = max(0, min(1, progress))
+                pop = math.sin(pop_t * math.pi * 1.2)
+                squeeze_x = 1 + 0.2 * pop * intensity
+                squeeze_y = 1 - 0.15 * pop * intensity
+                extra_scale = 1 + 0.3 * pop * intensity
+                rise = max(0, 1 - pop_t * 3) * 30
+                extra_y = -int(rise * pop * intensity)
+                glow_alpha_mult = 0.2 + 0.4 * pop * intensity
                 glow_color = (255, 180, 255)
 
             elif style == "殘影拖曳":
+                alpha = int(base_alpha * karaoke_reveal)
                 active = max(0., 1 - abs(progress - .5) * 1.6)
-                ghost_trail = int(3 * active * intensity)
-                extra_x = int(active * 8 * intensity)
-                extra_y = -int(4 * active * intensity)
-                extra_scale = 1 + 0.12 * active * intensity
-                glow_alpha_mult = 0.25 + 0.3 * active * intensity
+                ghost_trail = int(4 * active * intensity)
+                extra_x = int(active * 12 * intensity)
+                extra_y = -int(6 * active * intensity)
+                extra_scale = 1 + 0.15 * active * intensity
+                glow_alpha_mult = 0.25 + 0.35 * active * intensity
                 glow_color = (150, 100, 255)
 
             elif style == "閃爍霓虹":
-                flicker = rng.random()
+                alpha = int(base_alpha * karaoke_reveal)
+                active = max(0., 1 - abs(progress - .5) * 1.6)
                 flicker_on = math.sin(local * 15 * speed + char_phase * 20) > -0.2
                 neon_bright = 1.0 if flicker_on else 0.25
-                extra_scale = 1 + 0.06 * neon_bright * intensity
-                glow_alpha_mult = 0.15 + 0.6 * neon_bright * intensity
+                neon_bright *= active
+                extra_scale = 1 + 0.1 * neon_bright * intensity
+                glow_alpha_mult = 0.15 + 0.7 * neon_bright * intensity
                 hue_shift = (char_phase * 360) % 360
                 if hue_shift < 120:
                     glow_color = (255, 80, 80)
@@ -254,20 +270,20 @@ def _draw(frame: Image.Image, item: object, now: float, energy: float, width: in
                     glow_color = (80, 255, 80)
                 else:
                     glow_color = (80, 80, 255)
-                alpha = min(255, int(base_alpha * (0.5 + 0.5 * neon_bright)))
                 stroke_w = max(4, font.size // 13)
 
             elif style == "粒子爆破":
-                scatter = max(0, 1 - local * 2.5 * speed)
-                gather = max(0, min(1, (local - .05 / speed) * 4 * speed))
-                if scatter > 0:
-                    extra_x = int((rng.random() - 0.5) * 40 * scatter * intensity)
-                    extra_y = int((rng.random() - 0.5) * 40 * scatter * intensity)
+                alpha = int(base_alpha * karaoke_reveal)
+                active = max(0., 1 - abs(progress - .5) * 1.6)
+                scatter = active
+                gather = max(0, min(1, progress * 2))
+                if scatter > 0.1:
+                    extra_x = int((rng.random() - 0.5) * 50 * scatter * intensity)
+                    extra_y = int((rng.random() - 0.5) * 50 * scatter * intensity)
                     extra_scale = 0.3 + 0.7 * gather
-                    alpha = int(base_alpha * gather)
                 else:
-                    extra_scale = 1 + 0.05 * math.sin(local * 10 * speed) * intensity
-                glow_alpha_mult = 0.2 + 0.3 * gather * intensity
+                    extra_scale = 1 + 0.08 * math.sin(progress * 10) * intensity
+                glow_alpha_mult = 0.2 + 0.4 * gather * intensity
                 glow_color = (255, 140, 50)
 
             pop = 1 + extra_scale - 1
