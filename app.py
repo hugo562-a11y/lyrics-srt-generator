@@ -1120,38 +1120,43 @@ class LyricsSrtApp(tk.Tk):
             prompt_text = "\n".join(reference[:6]) if reference else ""
             vad_params = dict(min_silence_duration_ms=400, speech_pad_ms=250)
             lyrics: list[Segment] = []
+            wx_failed = False
             if reference and force_align:
-                self.events.put(("status", "正在安裝 whisperx 強制對齊套件（首次較久）…"))
-                ensure_optional_package("whisperx", "whisperx>=3.3.0", lambda text: self.events.put(("status", text)))
-                import whisperx
-                lang_code = None if language == "auto" else language
-                wx_device = "cuda" if use_gpu else "cpu"
-                self.events.put(("status", "正在以 whisperx 轉錄音檔…"))
-                wx_model = whisperx.load_model(model_name, device=wx_device, compute_type="float16" if wx_device == "cuda" else "int8", language=lang_code)
-                wx_result = wx_model.transcribe(str(source_path), batch_size=16, language=lang_code, temperature=temperature)
-                self.events.put(("status", "正在載入 CTC 對齊模型…"))
-                align_lang = wx_result.get("language", lang_code) or "zh"
-                wx_align_model, wx_metadata = whisperx.load_align_model(language_code=align_lang, device=wx_device)
-                self.events.put(("status", "正在以 CTC 強制對齊取得精確時間點…"))
-                wx_aligned = whisperx.align(wx_result["segments"], wx_align_model, wx_metadata, str(source_path), device=wx_device)
-                recognized = []
-                for seg in wx_aligned.get("segments", []):
-                    words = seg.get("words", [])
-                    for w in words:
-                        ws, we = w.get("start"), w.get("end")
-                        wt = str(w.get("word", "")).strip()
-                        if wt and ws is not None and we is not None and we > ws:
-                            recognized.append(Segment(float(ws), float(we), LYRIC_KIND, wt))
-                    if not words:
-                        text = str(seg.get("text", "")).strip()
-                        s, e = seg.get("start", 0), seg.get("end", 0)
-                        if text and e > s:
-                            recognized.append(Segment(float(s), float(e), LYRIC_KIND, text))
-                if vocal_onset >= min_gap:
-                    recognized = [item for item in recognized if item.end > vocal_onset - 0.08]
-                lyrics = align_reference_lyrics(reference, recognized, self.duration)
-                self.events.put(("status", f"已以 whisperx CTC 強制對齊完成 {len(reference)} 句歌詞。"))
-            else:
+                try:
+                    self.events.put(("status", "正在安裝 whisperx 強制對齊套件（首次較久）…"))
+                    ensure_optional_package("whisperx", "whisperx>=3.3.0", lambda text: self.events.put(("status", text)))
+                    import whisperx
+                    lang_code = None if language == "auto" else language
+                    wx_device = "cuda" if use_gpu else "cpu"
+                    self.events.put(("status", "正在以 whisperx 轉錄音檔…"))
+                    wx_model = whisperx.load_model(model_name, device=wx_device, compute_type="float16" if wx_device == "cuda" else "int8", language=lang_code)
+                    wx_result = wx_model.transcribe(str(source_path), batch_size=16, language=lang_code, temperature=temperature)
+                    self.events.put(("status", "正在載入 CTC 對齊模型…"))
+                    align_lang = wx_result.get("language", lang_code) or "zh"
+                    wx_align_model, wx_metadata = whisperx.load_align_model(language_code=align_lang, device=wx_device)
+                    self.events.put(("status", "正在以 CTC 強制對齊取得精確時間點…"))
+                    wx_aligned = whisperx.align(wx_result["segments"], wx_align_model, wx_metadata, str(source_path), device=wx_device)
+                    recognized = []
+                    for seg in wx_aligned.get("segments", []):
+                        words = seg.get("words", [])
+                        for w in words:
+                            ws, we = w.get("start"), w.get("end")
+                            wt = str(w.get("word", "")).strip()
+                            if wt and ws is not None and we is not None and we > ws:
+                                recognized.append(Segment(float(ws), float(we), LYRIC_KIND, wt))
+                        if not words:
+                            text = str(seg.get("text", "")).strip()
+                            s, e = seg.get("start", 0), seg.get("end", 0)
+                            if text and e > s:
+                                recognized.append(Segment(float(s), float(e), LYRIC_KIND, text))
+                    if vocal_onset >= min_gap:
+                        recognized = [item for item in recognized if item.end > vocal_onset - 0.08]
+                    lyrics = align_reference_lyrics(reference, recognized, self.duration)
+                    self.events.put(("status", f"已以 whisperx CTC 強制對齊完成 {len(reference)} 句歌詞。"))
+                except Exception as wx_exc:
+                    self.events.put(("status", f"whisperx 安裝失敗（可能不支援此 Python 版本），改用標準對齊：{wx_exc}"))
+                    wx_failed = True
+            if not lyrics:
                 if reference:
                     self.events.put(("status", "正在辨識前奏結束與第一句人聲位置…"))
                     onset_raw, _ = model.transcribe(str(source_path), language=None if language == "auto" else language, vad_filter=True, vad_parameters=vad_params, condition_on_previous_text=False, beam_size=5, initial_prompt=prompt_text, temperature=temperature, no_speech_threshold=no_speech)
