@@ -31,6 +31,7 @@ class SubtitleStyle:
     offset_y: float = 0.0
     anim_intensity: float = 1.0
     anim_speed: float = 1.0
+    font_path: str = ""
 
 
 DEFAULT_STYLE = SubtitleStyle()
@@ -85,7 +86,7 @@ def _fit_lines(text: str, font_path: Path, max_width: int, size: int) -> tuple[l
 
 def _draw(frame: Image.Image, item: object, now: float, energy: float, width: int, height: int, style: str, subtitle_style: SubtitleStyle) -> None:
     text, start, end = item.text, item.start, item.end
-    font_path = _font_path()
+    font_path = Path(subtitle_style.font_path) if subtitle_style.font_path and Path(subtitle_style.font_path).exists() else _font_path()
     lines, font = _fit_lines(text, font_path, int(width * 0.80), subtitle_style.font_size)
     local, duration = now - start, end - start
     intensity = subtitle_style.anim_intensity
@@ -341,7 +342,7 @@ def render_sequence(segments: Iterable[object], audio_path: Path | None, duratio
     subtitle_style = subtitle_style or DEFAULT_STYLE
     items = sorted((item for item in segments if item.end > item.start), key=lambda item: item.start)
     if not items: raise RuntimeError("沒有可輸出的歌詞。")
-    font = _font_path()
+    font = Path(subtitle_style.font_path) if subtitle_style.font_path and Path(subtitle_style.font_path).exists() else _font_path()
     if not font.exists(): raise RuntimeError("找不到可顯示中文的字型（Microsoft JhengHei／Noto Sans TC）。")
     total = math.ceil(duration * fps)
     output.mkdir(parents=True, exist_ok=True)

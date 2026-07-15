@@ -607,6 +607,64 @@ class LyricsSrtApp(tk.Tk):
         self.anim_intensity_var = tk.DoubleVar(value=1.0)
         self.anim_speed_var = tk.DoubleVar(value=1.0)
         self.preview_zoom_var = tk.DoubleVar(value=1.0)
+        
+        # 初始化可用的中英文字型映射（從 Windows 註冊表掃描所有已安裝的字型）
+        self.font_paths = {}
+        try:
+            import winreg
+            # 1. 讀取系統全域字型 (HKLM)
+            try:
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts") as key:
+                    info = winreg.QueryInfoKey(key)
+                    for i in range(info[1]):
+                        name, value, _ = winreg.EnumValue(key, i)
+                        font_name = re.sub(r"\s*\((TrueType|OpenType|PostScript|Vertical|All Res)\)", "", name, flags=re.IGNORECASE)
+                        if not os.path.isabs(value):
+                            value = os.path.join(r"C:\Windows\Fonts", value)
+                        ext = os.path.splitext(value)[1].lower()
+                        if ext in (".ttf", ".ttc", ".otf") and os.path.exists(value):
+                            self.font_paths[font_name] = value
+            except Exception:
+                pass
+            
+            # 2. 讀取目前使用者字型 (HKCU)
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts") as key:
+                    info = winreg.QueryInfoKey(key)
+                    for i in range(info[1]):
+                        name, value, _ = winreg.EnumValue(key, i)
+                        font_name = re.sub(r"\s*\((TrueType|OpenType|PostScript|Vertical|All Res)\)", "", name, flags=re.IGNORECASE)
+                        if not os.path.isabs(value):
+                            local_appdata = os.environ.get("LOCALAPPDATA", "")
+                            if local_appdata:
+                                value = os.path.join(local_appdata, r"Microsoft\Windows\Fonts", value)
+                        ext = os.path.splitext(value)[1].lower()
+                        if ext in (".ttf", ".ttc", ".otf") and os.path.exists(value):
+                            self.font_paths[font_name] = value
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        # 字母排序
+        self.font_paths = dict(sorted(self.font_paths.items(), key=lambda x: x[0].lower()))
+        if not self.font_paths:
+            self.font_paths["系統預設字型"] = ""
+            
+        # 尋找微軟正黑體或常用字型作為預設值
+        default_font_name = "系統預設字型"
+        candidates = ["Microsoft JhengHei UI Bold", "Microsoft JhengHei Bold", "微軟正黑體 粗體", "Microsoft JhengHei", "微軟正黑體"]
+        for cand in candidates:
+            match = next((name for name in self.font_paths if cand.lower() in name.lower()), None)
+            if match:
+                default_font_name = match
+                break
+        if default_font_name == "系統預設字型" and self.font_paths:
+            default_font_name = next(iter(self.font_paths.keys()))
+            
+        self.subtitle_font_name_var = tk.StringVar()
+        self.subtitle_font_name_var.set(default_font_name)
+        
         self.img_provider_var = tk.StringVar(value="openai")
         self.img_api_key_var = tk.StringVar(value="")
         self.img_style_var = tk.StringVar(value="電影風")
@@ -622,6 +680,7 @@ class LyricsSrtApp(tk.Tk):
         self.bind_class("TButton", "<space>", lambda _e: None)
         self.bind_class("TCheckbutton", "<space>", lambda _e: None)
         self.bind_all("<space>", self._on_space_key)
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.after(120, self._poll_events)
         self.after(250, self._check_dependencies_async)
         self.after(75, self._update_playback)
@@ -637,6 +696,10 @@ class LyricsSrtApp(tk.Tk):
                 ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attribute, ctypes.byref(value), ctypes.sizeof(value))
         except Exception:
             pass
+
+    def on_closing(self) -> None:
+        self._stop_audio_process()
+        self.destroy()
 
     def _build_ui(self) -> None:
         style = ttk.Style(self)
@@ -674,7 +737,7 @@ class LyricsSrtApp(tk.Tk):
         self.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
         self.columnconfigure(0, weight=1)
         self.columnconfigure(1, weight=0)
-        self.rowconfigure(3, weight=1)
+        self.rowconfigure(2, weight=1)
 
         # ── 頂部列：檔案操作 ──────────────────────────────────────────
         top = ttk.Frame(self, padding=(14, 10, 14, 6))
@@ -713,7 +776,9 @@ class LyricsSrtApp(tk.Tk):
         self.vocals_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(opts_row, text="分離人聲", variable=self.vocals_var).pack(side="left", padx=(0, 10))
         self.force_align_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(opts_row, text="強制對齊", variable=self.force_align_var).pack(side="left", padx=(0, 16))
+        ttk.Checkbutton(opts_row, text="強制對齊", variable=self.force_align_var).pack(side="left", padx=(0, 10))
+        self.intro_filter_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(opts_row, text="前奏保護", variable=self.intro_filter_var).pack(side="left", padx=(0, 16))
         ttk.Label(opts_row, text="最短音樂段").pack(side="left", padx=(0, 2))
         self.min_gap_var = tk.StringVar(value="1.2")
         ttk.Entry(opts_row, textvariable=self.min_gap_var, width=5).pack(side="left", padx=(0, 8))
@@ -721,7 +786,7 @@ class LyricsSrtApp(tk.Tk):
         self.temperature_var = tk.StringVar(value="0")
         ttk.Entry(opts_row, textvariable=self.temperature_var, width=4).pack(side="left", padx=(0, 8))
         ttk.Label(opts_row, text="非語音").pack(side="left", padx=(0, 2))
-        self.no_speech_var = tk.StringVar(value="0.4")
+        self.no_speech_var = tk.StringVar(value="0.6")
         ttk.Entry(opts_row, textvariable=self.no_speech_var, width=4).pack(side="left")
         status_row = ttk.Frame(ai_frame)
         status_row.grid(row=2, column=0, columnspan=7, sticky="ew", pady=(6, 0))
@@ -822,6 +887,14 @@ class LyricsSrtApp(tk.Tk):
         ttk.Scale(style_frame, from_=0.0, to=3.0, variable=self.anim_intensity_var, length=80, command=lambda _v: self._refresh_preview()).grid(row=r, column=1, columnspan=2, sticky="ew")
         ttk.Label(style_frame, text="速度").grid(row=r, column=3, sticky="w", padx=(12, 4))
         ttk.Scale(style_frame, from_=0.2, to=3.0, variable=self.anim_speed_var, length=80, command=lambda _v: self._refresh_preview()).grid(row=r, column=4, columnspan=2, sticky="ew")
+ 
+        r = 4
+        ttk.Label(style_frame, text="字型").grid(row=r, column=0, sticky="w", padx=(0, 4), pady=(4, 0))
+        self.font_combo = ttk.Combobox(style_frame, textvariable=self.subtitle_font_name_var, state="readonly", width=14)
+        self.font_combo.grid(row=r, column=1, columnspan=3, sticky="ew", pady=(4, 0))
+        self.font_combo["values"] = tuple(self.font_paths.keys())
+        self.font_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_preview())
+        ttk.Button(style_frame, text="瀏覽...", command=self._browse_font, width=6).grid(row=r, column=4, columnspan=2, sticky="w", padx=(12, 0), pady=(4, 0))
 
         # — AI 影像生成區 —
         img_frame = ttk.LabelFrame(right, text=" AI 影像生成 ", padding=(10, 8))
@@ -1142,7 +1215,7 @@ class LyricsSrtApp(tk.Tk):
         self.analyze_btn.configure(state="disabled")
         self._set_progress_status("正在載入本機模型並轉錄，首次使用會下載模型…", busy=True)
         reference = list(self.reference_lyrics)
-        threading.Thread(target=self._run_transcription, args=(self.audio_path, self.model_var.get(), self.language_var.get(), self.device_var.get(), min_gap, reference, self.precise_var.get(), self.vocals_var.get(), temperature, no_speech, self.force_align_var.get()), daemon=True).start()
+        threading.Thread(target=self._run_transcription, args=(self.audio_path, self.model_var.get(), self.language_var.get(), self.device_var.get(), min_gap, reference, self.precise_var.get(), self.vocals_var.get(), temperature, no_speech, self.force_align_var.get(), self.intro_filter_var.get()), daemon=True).start()
 
     def _separate_vocals(self, path: Path) -> tuple[Path, Path | None]:
         """用 Demucs 建立人聲軌；回傳暫存目錄供呼叫端清理。"""
@@ -1157,7 +1230,7 @@ class LyricsSrtApp(tk.Tk):
             raise RuntimeError("人聲分離沒有產生 vocals.wav。")
         return vocal_path, output_dir
 
-    def _run_transcription(self, path: Path, model_name: str, language: str, device_choice: str, min_gap: float, reference: list[str], precise: bool, separate_vocals: bool, temperature: float = 0.0, no_speech: float = 0.4, force_align: bool = False) -> None:
+    def _run_transcription(self, path: Path, model_name: str, language: str, device_choice: str, min_gap: float, reference: list[str], precise: bool, separate_vocals: bool, temperature: float = 0.0, no_speech: float = 0.6, force_align: bool = False, intro_filter: bool = True) -> None:
         temporary_dir: Path | None = None
         try:
             self._ensure_dependencies()
@@ -1218,7 +1291,7 @@ class LyricsSrtApp(tk.Tk):
                             s, e = seg.get("start", 0), seg.get("end", 0)
                             if text and e > s:
                                 recognized.append(Segment(float(s), float(e), LYRIC_KIND, text))
-                    if vocal_onset >= min_gap:
+                    if intro_filter and vocal_onset >= min_gap:
                         recognized = [item for item in recognized if item.end > vocal_onset - 0.08]
                     lyrics = align_reference_lyrics(reference, recognized, self.duration)
                     self.events.put(("status", f"已以 whisperx CTC 強制對齊完成 {len(reference)} 句歌詞。"))
@@ -1226,17 +1299,18 @@ class LyricsSrtApp(tk.Tk):
                     self.events.put(("status", f"whisperx 安裝失敗（可能不支援此 Python 版本），改用標準對齊：{wx_exc}"))
                     wx_failed = True
             if not lyrics:
-                if reference:
+                if reference and intro_filter:
                     self.events.put(("status", "正在辨識前奏結束與第一句人聲位置…"))
-                    onset_raw, _ = model.transcribe(str(source_path), language=None if language == "auto" else language, vad_filter=True, vad_parameters=vad_params, condition_on_previous_text=False, beam_size=5, initial_prompt=prompt_text, temperature=temperature, no_speech_threshold=no_speech)
+                    # 偵測前奏時使用標準預設的 0.6 門檻，確保不會被過於嚴格的設定誤殺
+                    onset_raw, _ = model.transcribe(str(source_path), language=None if language == "auto" else language, vad_filter=True, vad_parameters=vad_params, condition_on_previous_text=False, beam_size=5, temperature=temperature)
                     onset_segments = normalize_lyrics(list(onset_raw))
                     if onset_segments:
                         vocal_onset = onset_segments[0].start
                 self.events.put(("status", "正在分析音訊與逐字時間點，請稍候…"))
-                raw, _ = model.transcribe(str(source_path), language=None if language == "auto" else language, vad_filter=not bool(reference), vad_parameters=vad_params if reference else None, condition_on_previous_text=False, beam_size=5, word_timestamps=precise, initial_prompt=prompt_text, temperature=temperature, no_speech_threshold=no_speech)
+                raw, _ = model.transcribe(str(source_path), language=None if language == "auto" else language, vad_filter=not bool(reference), vad_parameters=vad_params if reference else None, condition_on_previous_text=False, beam_size=5, word_timestamps=precise, temperature=temperature, no_speech_threshold=no_speech)
                 raw_segments = list(raw)
                 recognized = word_timing_anchors(raw_segments) if precise else normalize_lyrics(raw_segments)
-                if vocal_onset >= min_gap:
+                if intro_filter and vocal_onset >= min_gap:
                     recognized = [item for item in recognized if item.end > vocal_onset - 0.08]
                 lyrics = align_reference_lyrics(reference, recognized, self.duration) if reference else normalize_lyrics(raw_segments)
                 if reference:
@@ -1442,6 +1516,8 @@ class LyricsSrtApp(tk.Tk):
                 "png_aspect": self.png_aspect_var.get(),
                 "png_animation": self.png_animation_var.get(),
                 "font_size": self.subtitle_font_size_var.get(),
+                "font_name": self.subtitle_font_name_var.get(),
+                "font_path": self.font_paths.get(self.subtitle_font_name_var.get(), ""),
                 "text_color": self.subtitle_text_color,
                 "outline_color": self.subtitle_outline_color,
                 "valign": self.subtitle_valign_var.get(),
@@ -1494,6 +1570,13 @@ class LyricsSrtApp(tk.Tk):
             if "png_aspect" in s: self.png_aspect_var.set(s["png_aspect"])
             if "png_animation" in s: self.png_animation_var.set(s["png_animation"])
             if "font_size" in s: self.subtitle_font_size_var.set(int(s["font_size"]))
+            if "font_name" in s:
+                font_name = s["font_name"]
+                font_path = s.get("font_path", "")
+                if font_path:
+                    self.font_paths[font_name] = font_path
+                self.font_combo["values"] = tuple(self.font_paths.keys())
+                self.subtitle_font_name_var.set(font_name)
             if "text_color" in s: self.subtitle_text_color = s["text_color"]
             if "outline_color" in s: self.subtitle_outline_color = s["outline_color"]
             if "valign" in s: self.subtitle_valign_var.set(s["valign"])
@@ -1537,7 +1620,7 @@ class LyricsSrtApp(tk.Tk):
         # 複製時間軸資料，讓輸出期間仍可安全操作或繼續校正 UI。
         snapshot = copy.deepcopy(active)
         style = self.png_animation_var.get()
-        subtitle_style = self._current_subtitle_style()
+        subtitle_style = self._current_subtitle_style(target_height=height)
         threading.Thread(target=self._run_dynamic_png_export, args=(snapshot, output, width, height, style, subtitle_style), daemon=True).start()
 
     def _run_dynamic_png_export(self, segments: list[Segment], output: Path, width: int, height: int, style: str, subtitle_style: object) -> None:
@@ -1555,14 +1638,15 @@ class LyricsSrtApp(tk.Tk):
         value = value.lstrip("#")
         return (int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16))
 
-    def _current_subtitle_style(self):
+    def _current_subtitle_style(self, target_height: float | None = None):
         from subtitle_png_renderer import SubtitleStyle
         valign_map = {"上方": "top", "中間": "middle", "下方": "bottom"}
         halign_map = {"靠左": "left", "置中": "center", "靠右": "right"}
-        _, preview_h = self._preview_dimensions()
+        if target_height is None:
+            _, target_height = PNG_ASPECTS[self.png_aspect_var.get()]
         base_font = int(self.subtitle_font_size_var.get())
-        zoom = self.preview_zoom_var.get()
-        scaled_font = max(16, int(base_font * preview_h / 700 * zoom))
+        # Scale the font size relative to a reference height of 1080p.
+        scaled_font = max(12, int(base_font * (target_height / 1080.0)))
         return SubtitleStyle(
             font_size=scaled_font,
             text_color=self._hex_to_rgb(self.subtitle_text_color),
@@ -1573,7 +1657,21 @@ class LyricsSrtApp(tk.Tk):
             offset_y=self.subtitle_offset_y_var.get(),
             anim_intensity=self.anim_intensity_var.get(),
             anim_speed=self.anim_speed_var.get(),
+            font_path=self.font_paths.get(self.subtitle_font_name_var.get(), ""),
         )
+
+    def _browse_font(self) -> None:
+        path = filedialog.askopenfilename(
+            title="選擇字型檔案",
+            filetypes=[("字型檔案", "*.ttc *.ttf *.otf"), ("所有檔案", "*.*")]
+        )
+        if path:
+            font_path = Path(path)
+            name = f"自訂: {font_path.name}"
+            self.font_paths[name] = str(font_path)
+            self.font_combo["values"] = tuple(self.font_paths.keys())
+            self.subtitle_font_name_var.set(name)
+            self._refresh_preview()
 
     def _pick_text_color(self) -> None:
         color = colorchooser.askcolor(color=self.subtitle_text_color, title="選擇文字顏色")[1]
@@ -1589,15 +1687,30 @@ class LyricsSrtApp(tk.Tk):
             self.outline_color_btn.configure(background=color, activebackground=color)
             self._refresh_preview()
 
-    def _preview_dimensions(self) -> tuple[int, int]:
+    def _get_preview_dimensions(self) -> tuple[int, int, int, int]:
+        """計算 Canvas 尺寸與貼合目標比例並套用 Viewport 縮放的影片容器大小。
+        
+        返回: (canvas_w, canvas_h, video_w, video_h)
+        """
+        cw = 480
+        ch = 270
         if self.preview_image_label and self.preview_image_label.winfo_exists():
-            cw = self.preview_image_label.winfo_width()
-            ch = self.preview_image_label.winfo_height()
-            if cw > 20 and ch > 20:
-                return cw, ch
-        width, height = PNG_ASPECTS[self.png_aspect_var.get()]
-        scale = min(480 / width, 700 / height)
-        return max(2, int(width * scale)), max(2, int(height * scale))
+            w = self.preview_image_label.winfo_width()
+            h = self.preview_image_label.winfo_height()
+            if w > 20 and h > 20:
+                cw, ch = w, h
+        
+        aspect_w, aspect_h = PNG_ASPECTS[self.png_aspect_var.get()]
+        pad = 20
+        avail_w = max(50, cw - pad)
+        avail_h = max(50, ch - pad)
+        
+        # 計算等比例縮放適配
+        scale = min(avail_w / aspect_w, avail_h / aspect_h)
+        zoom = self.preview_zoom_var.get()
+        sw = max(2, int(aspect_w * scale * zoom))
+        sh = max(2, int(aspect_h * scale * zoom))
+        return cw, ch, sw, sh
 
     def _on_preview_scroll(self, event) -> None:
         delta = 0
@@ -1614,11 +1727,7 @@ class LyricsSrtApp(tk.Tk):
             self._refresh_preview()
 
     def _refresh_preview(self, now: float | None = None) -> None:
-        """依目前主播放位置重繪內嵌字幕預覽；不寫檔、不影響時間軸。
-
-        `now` 由 `_update_playback` 在播放中傳入即時內插時間；其餘呼叫（拖曳、選取、
-        改樣式）不傳時間，直接使用 `self.playback_offset`（暫停/拖曳後的固定位置）。
-        """
+        """依目前主播放位置重繪內嵌字幕預覽；不寫檔、不影響時間軸。"""
         if not self.preview_image_label or not self.preview_image_label.winfo_exists():
             return
         try:
@@ -1629,14 +1738,30 @@ class LyricsSrtApp(tk.Tk):
         try:
             preview_time = self.playback_offset if now is None else now
             active = [item for item in self.segments if not item.deleted and item.kind == LYRIC_KIND and item.text.strip()]
-            width, height = self._preview_dimensions()
-            image = render_preview_frame(active, preview_time, width, height, self.png_animation_var.get(), self._current_subtitle_style())
+            
+            cw, ch, sw, sh = self._get_preview_dimensions()
+            style = self._current_subtitle_style(target_height=sh)
+            
+            image = render_preview_frame(active, preview_time, sw, sh, self.png_animation_var.get(), style)
             if not self.playing and not any(s.start <= preview_time < s.end for s in active) and active:
-                image = render_preview_frame(active, active[0].start + 0.01, width, height, self.png_animation_var.get(), self._current_subtitle_style())
+                image = render_preview_frame(active, active[0].start + 0.01, sw, sh, self.png_animation_var.get(), style)
+            
             self.preview_photo = ImageTk.PhotoImage(image)
             canvas = self.preview_image_label
             canvas.delete("all")
-            canvas.create_image(canvas.winfo_width() // 2, canvas.winfo_height() // 2, image=self.preview_photo, anchor="center")
+            
+            # 填滿 Canvas 深色背景
+            canvas.create_rectangle(0, 0, cw, ch, fill="#08090b", width=0)
+            
+            # 繪製置中的影片比例容器（ Letterbox / Pillarbox ）
+            x0 = (cw - sw) // 2
+            y0 = (ch - sh) // 2
+            x1 = x0 + sw
+            y1 = y0 + sh
+            canvas.create_rectangle(x0, y0, x1, y1, fill="#141518", outline="#4c8bf5", width=1)
+            
+            # 將透明字幕圖像覆蓋至該影片比例容器上
+            canvas.create_image(cw // 2, ch // 2, image=self.preview_photo, anchor="center")
         except Exception:
             pass  # 預覽是輔助功能，繪製失敗不應打斷主要編輯流程。
 
