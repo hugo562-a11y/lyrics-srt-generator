@@ -114,7 +114,27 @@ def word_timing_anchors(raw_segments: Iterable[object]) -> list[Segment]:
             text = str(getattr(segment, "text", "")).strip()
             if text and segment.end > segment.start:
                 anchors.append(Segment(float(segment.start), float(segment.end), LYRIC_KIND, text))
-    return anchors
+    return _remove_hallucination_repeats(anchors)
+
+
+def _remove_hallucination_repeats(anchors: list[Segment], min_repeat: int = 3) -> list[Segment]:
+    """偵測連續重複文字，若出現 ≥ min_repeat 次則只保留第一次，其餘刪除。"""
+    if not anchors:
+        return anchors
+    result: list[Segment] = []
+    repeat_count = 0
+    last_norm = ""
+    for anchor in anchors:
+        norm = _comparison_text(anchor.text)
+        if norm == last_norm:
+            repeat_count += 1
+            if repeat_count < min_repeat:
+                result.append(anchor)
+        else:
+            repeat_count = 0
+            last_norm = norm
+            result.append(anchor)
+    return result
 
 
 def read_lyric_lines(path: Path) -> list[str]:
@@ -197,6 +217,16 @@ def add_music_markers(lyrics: list[Segment], duration: float, min_gap: float) ->
     return output
 
 
+def _fix_overlapping_segments(segments: list[Segment]) -> list[Segment]:
+    """修正相鄰段落的時間重疊：以中點切分，確保無重疊。"""
+    for i in range(len(segments) - 1):
+        if segments[i].end > segments[i + 1].start:
+            mid = (segments[i].end + segments[i + 1].start) / 2
+            segments[i].end = mid
+            segments[i + 1].start = mid
+    return segments
+
+
 class LyricsSrtApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -250,7 +280,7 @@ class LyricsSrtApp(tk.Tk):
         controls.grid(row=1, column=0, sticky="ew", padx=14, pady=6)
         controls.columnconfigure(9, weight=1)
         ttk.Label(controls, text="模型").grid(row=0, column=0, padx=(0, 5))
-        self.model_var = tk.StringVar(value="small")
+        self.model_var = tk.StringVar(value="large-v3")
         ttk.Combobox(controls, textvariable=self.model_var, width=11, state="readonly", values=("tiny", "base", "small", "medium", "large-v3")).grid(row=0, column=1)
         ttk.Label(controls, text="語言").grid(row=0, column=2, padx=(14, 5))
         self.language_var = tk.StringVar(value="zh")
@@ -267,9 +297,17 @@ class LyricsSrtApp(tk.Tk):
         ttk.Checkbutton(controls, text="精準逐字對齊（建議）", variable=self.precise_var).grid(row=1, column=0, columnspan=3, sticky="w", pady=(8, 0))
         self.vocals_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(controls, text="先分離人聲（較慢）", variable=self.vocals_var).grid(row=1, column=3, columnspan=3, sticky="w", pady=(8, 0))
+        self.force_align_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(controls, text="強制對齊（最精準，需額外套件）", variable=self.force_align_var).grid(row=2, column=0, columnspan=3, sticky="w", pady=(2, 0))
+        ttk.Label(controls, text="隨機性").grid(row=1, column=6, padx=(14, 5), sticky="e")
+        self.temperature_var = tk.StringVar(value="0")
+        ttk.Entry(controls, textvariable=self.temperature_var, width=5).grid(row=1, column=7, sticky="w")
+        ttk.Label(controls, text="非語音門檻").grid(row=1, column=8, padx=(14, 5), sticky="e")
+        self.no_speech_var = tk.StringVar(value="0.4")
+        ttk.Entry(controls, textvariable=self.no_speech_var, width=5).grid(row=1, column=9, sticky="w")
         self.progress_var = tk.StringVar(value="等待匯入音檔")
         status_row = ttk.Frame(controls)
-        status_row.grid(row=2, column=0, columnspan=10, sticky="ew", pady=(8, 0))
+        status_row.grid(row=3, column=0, columnspan=10, sticky="ew", pady=(8, 0))
         status_row.columnconfigure(0, weight=1)
         ttk.Label(status_row, textvariable=self.progress_var, foreground="#245a9c").grid(row=0, column=0, sticky="w")
         self.progress_bar = ttk.Progressbar(status_row, mode="indeterminate", length=220)
@@ -488,10 +526,24 @@ class LyricsSrtApp(tk.Tk):
         except ValueError:
             messagebox.showerror(APP_TITLE, "最短音樂段必須是數字。")
             return
+        try:
+            temperature = max(0.0, float(self.temperature_var.get()))
+            no_speech = float(self.no_speech_var.get())
+        except ValueError:
+            messagebox.showerror(APP_TITLE, "隨機性與非語音門檻必須是數字。")
+            return
+        lang = self.language_var.get()
+        if lang in ("zh", "ja", "ko") and not self.vocals_var.get() and not self.force_align_var.get():
+            if not messagebox.askyesno(APP_TITLE,
+                f"偵測到語言為「{lang}」，建議同時開啟：\n\n"
+                "  ☑ 先分離人聲（降低伴奏干擾）\n"
+                "  ☑ 強制對齊（取得精確時間）\n\n"
+                "目前設定仍可執行，但辨識度可能較低。\n是否繼續？"):
+                return
         self.analyze_btn.configure(state="disabled")
         self._set_progress_status("正在載入本機模型並轉錄，首次使用會下載模型…", busy=True)
         reference = list(self.reference_lyrics)
-        threading.Thread(target=self._run_transcription, args=(self.audio_path, self.model_var.get(), self.language_var.get(), self.device_var.get(), min_gap, reference, self.precise_var.get(), self.vocals_var.get()), daemon=True).start()
+        threading.Thread(target=self._run_transcription, args=(self.audio_path, self.model_var.get(), self.language_var.get(), self.device_var.get(), min_gap, reference, self.precise_var.get(), self.vocals_var.get(), temperature, no_speech, self.force_align_var.get()), daemon=True).start()
 
     def _separate_vocals(self, path: Path) -> tuple[Path, Path | None]:
         """用 Demucs 建立人聲軌；回傳暫存目錄供呼叫端清理。"""
@@ -506,7 +558,7 @@ class LyricsSrtApp(tk.Tk):
             raise RuntimeError("人聲分離沒有產生 vocals.wav。")
         return vocal_path, output_dir
 
-    def _run_transcription(self, path: Path, model_name: str, language: str, device_choice: str, min_gap: float, reference: list[str], precise: bool, separate_vocals: bool) -> None:
+    def _run_transcription(self, path: Path, model_name: str, language: str, device_choice: str, min_gap: float, reference: list[str], precise: bool, separate_vocals: bool, temperature: float = 0.0, no_speech: float = 0.4, force_align: bool = False) -> None:
         temporary_dir: Path | None = None
         try:
             self._ensure_dependencies()
@@ -525,7 +577,6 @@ class LyricsSrtApp(tk.Tk):
             except Exception as gpu_error:
                 dll_missing = any(word in str(gpu_error).lower() for word in ("cublas", "cudnn", ".dll", "library"))
                 if (device_choice == "GPU" or dll_missing) and "使用者選擇" not in str(gpu_error):
-                    # CUDA DLL 缺少時，先自動補齊 PyPI 可提供的執行庫，再重試一次。
                     self.events.put(("status", "GPU DLL 不完整，正在自動下載 NVIDIA 執行庫…"))
                     install_gpu_runtime(lambda text: self.events.put(("status", text)))
                     model = WhisperModel(model_name, device="cuda", compute_type="float16")
@@ -536,27 +587,58 @@ class LyricsSrtApp(tk.Tk):
             if separate_vocals:
                 source_path, temporary_dir = self._separate_vocals(path)
             vocal_onset = 0.0
-            if reference:
-                # 另跑一次保守的 VAD，只用來找第一句真正人聲的起點。
-                # 完整逐字對齊仍使用不過濾的分析，避免後段拖音被切掉。
-                self.events.put(("status", "正在辨識前奏結束與第一句人聲位置…"))
-                onset_raw, _ = model.transcribe(str(source_path), language=None if language == "auto" else language, vad_filter=True, condition_on_previous_text=False, beam_size=5)
-                onset_segments = normalize_lyrics(list(onset_raw))
-                if onset_segments:
-                    vocal_onset = onset_segments[0].start
-            self.events.put(("status", "正在分析音訊與逐字時間點，請稍候…"))
-            # 歌曲拖音與伴奏很容易被一般語音 VAD 當成靜音切掉，尤其是後半段。
-            # 提供正確歌詞時以完整音檔對齊，避免錨點在歌曲尚未結束前耗盡。
-            raw, _ = model.transcribe(str(source_path), language=None if language == "auto" else language, vad_filter=not bool(reference), condition_on_previous_text=False, beam_size=5, word_timestamps=precise)
-            raw_segments = list(raw)
-            recognized = word_timing_anchors(raw_segments) if precise else normalize_lyrics(raw_segments)
-            if vocal_onset >= min_gap:
-                recognized = [item for item in recognized if item.end > vocal_onset - 0.08]
-            lyrics = align_reference_lyrics(reference, recognized, self.duration) if reference else normalize_lyrics(raw_segments)
-            if reference:
-                level = "逐字" if precise and any(getattr(item, "words", None) for item in raw_segments) else "逐句"
-                self.events.put(("status", f"已以 {len(reference)} 句參考歌詞進行 {level} 節奏對齊。"))
-            self.events.put(("done", add_music_markers(lyrics, self.duration, min_gap)))
+            prompt_text = "\n".join(reference[:6]) if reference else ""
+            vad_params = dict(min_silence_duration_ms=400, speech_pad_ms=250)
+            lyrics: list[Segment] = []
+            if reference and force_align:
+                self.events.put(("status", "正在安裝 whisperx 強制對齊套件（首次較久）…"))
+                ensure_optional_package("whisperx", "whisperx>=3.3.0", lambda text: self.events.put(("status", text)))
+                import whisperx
+                lang_code = None if language == "auto" else language
+                wx_device = "cuda" if use_gpu else "cpu"
+                self.events.put(("status", "正在以 whisperx 轉錄音檔…"))
+                wx_model = whisperx.load_model(model_name, device=wx_device, compute_type="float16" if wx_device == "cuda" else "int8", language=lang_code)
+                wx_result = wx_model.transcribe(str(source_path), batch_size=16, language=lang_code, temperature=temperature)
+                self.events.put(("status", "正在載入 CTC 對齊模型…"))
+                align_lang = wx_result.get("language", lang_code) or "zh"
+                wx_align_model, wx_metadata = whisperx.load_align_model(language_code=align_lang, device=wx_device)
+                self.events.put(("status", "正在以 CTC 強制對齊取得精確時間點…"))
+                wx_aligned = whisperx.align(wx_result["segments"], wx_align_model, wx_metadata, str(source_path), device=wx_device)
+                recognized = []
+                for seg in wx_aligned.get("segments", []):
+                    words = seg.get("words", [])
+                    for w in words:
+                        ws, we = w.get("start"), w.get("end")
+                        wt = str(w.get("word", "")).strip()
+                        if wt and ws is not None and we is not None and we > ws:
+                            recognized.append(Segment(float(ws), float(we), LYRIC_KIND, wt))
+                    if not words:
+                        text = str(seg.get("text", "")).strip()
+                        s, e = seg.get("start", 0), seg.get("end", 0)
+                        if text and e > s:
+                            recognized.append(Segment(float(s), float(e), LYRIC_KIND, text))
+                if vocal_onset >= min_gap:
+                    recognized = [item for item in recognized if item.end > vocal_onset - 0.08]
+                lyrics = align_reference_lyrics(reference, recognized, self.duration)
+                self.events.put(("status", f"已以 whisperx CTC 強制對齊完成 {len(reference)} 句歌詞。"))
+            else:
+                if reference:
+                    self.events.put(("status", "正在辨識前奏結束與第一句人聲位置…"))
+                    onset_raw, _ = model.transcribe(str(source_path), language=None if language == "auto" else language, vad_filter=True, vad_parameters=vad_params, condition_on_previous_text=False, beam_size=5, initial_prompt=prompt_text, temperature=temperature, no_speech_threshold=no_speech)
+                    onset_segments = normalize_lyrics(list(onset_raw))
+                    if onset_segments:
+                        vocal_onset = onset_segments[0].start
+                self.events.put(("status", "正在分析音訊與逐字時間點，請稍候…"))
+                raw, _ = model.transcribe(str(source_path), language=None if language == "auto" else language, vad_filter=not bool(reference), vad_parameters=vad_params if reference else None, condition_on_previous_text=False, beam_size=5, word_timestamps=precise, initial_prompt=prompt_text, temperature=temperature, no_speech_threshold=no_speech)
+                raw_segments = list(raw)
+                recognized = word_timing_anchors(raw_segments) if precise else normalize_lyrics(raw_segments)
+                if vocal_onset >= min_gap:
+                    recognized = [item for item in recognized if item.end > vocal_onset - 0.08]
+                lyrics = align_reference_lyrics(reference, recognized, self.duration) if reference else normalize_lyrics(raw_segments)
+                if reference:
+                    level = "逐字" if precise and any(getattr(item, "words", None) for item in raw_segments) else "逐句"
+                    self.events.put(("status", f"已以 {len(reference)} 句參考歌詞進行 {level} 節奏對齊。"))
+            self.events.put(("done", _fix_overlapping_segments(add_music_markers(lyrics, self.duration, min_gap))))
         except Exception as exc:
             self.events.put(("error", str(exc)))
         finally:
@@ -584,7 +666,11 @@ class LyricsSrtApp(tk.Tk):
                 elif event == "done":
                     self.push_undo("AI 分析")
                     self.segments = payload  # type: ignore[assignment]
-                    self.refresh_tree(); self._set_progress_status(f"分析完成：{len(self.segments)} 個標記，可直接校正後匯出。", busy=False)
+                    active = [s for s in self.segments if not s.deleted]
+                    lyric_count = sum(1 for s in active if s.kind == LYRIC_KIND)
+                    music_count = sum(1 for s in active if s.kind == MUSIC_KIND)
+                    summary = f"分析完成：{lyric_count} 句歌詞、{music_count} 個音樂段，可雙擊表格校正後匯出。"
+                    self.refresh_tree(); self._set_progress_status(summary, busy=False)
                     self.analyze_btn.configure(state="normal")
                 elif event == "error":
                     self.analyze_btn.configure(state="normal")
