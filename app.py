@@ -20,6 +20,7 @@ from typing import Iterable
 
 from bootstrap import add_nvidia_dll_paths, ensure_optional_package, ensure_required_packages, gpu_runtime_ready, install_gpu_runtime
 from subtitle_png_renderer import ANIMATION_STYLES
+from prompts import PROMPT_STYLE_MAP as PROMPT_STYLES
 
 
 APP_TITLE = "歌詞 SRT 產生器"
@@ -605,6 +606,9 @@ class LyricsSrtApp(tk.Tk):
         self.subtitle_offset_y_var = tk.DoubleVar(value=0.0)
         self.anim_intensity_var = tk.DoubleVar(value=1.0)
         self.anim_speed_var = tk.DoubleVar(value=1.0)
+        self.img_provider_var = tk.StringVar(value="openai")
+        self.img_api_key_var = tk.StringVar(value="")
+        self.img_style_var = tk.StringVar(value="電影風")
         self._build_ui()
         self._apply_dark_titlebar()
         self.bind_all("<Control-z>", self.undo)
@@ -814,6 +818,31 @@ class LyricsSrtApp(tk.Tk):
         ttk.Scale(style_frame, from_=0.0, to=3.0, variable=self.anim_intensity_var, length=80, command=lambda _v: self._refresh_preview()).grid(row=r, column=1, columnspan=2, sticky="ew")
         ttk.Label(style_frame, text="速度").grid(row=r, column=3, sticky="w", padx=(12, 4))
         ttk.Scale(style_frame, from_=0.2, to=3.0, variable=self.anim_speed_var, length=80, command=lambda _v: self._refresh_preview()).grid(row=r, column=4, columnspan=2, sticky="ew")
+
+        # — AI 影像生成區 —
+        img_frame = ttk.LabelFrame(right, text=" AI 影像生成 ", padding=(10, 8))
+        img_frame.grid(row=2, column=0, sticky="ew", pady=(4, 0))
+        img_frame.columnconfigure(4, weight=1)
+
+        r2 = 0
+        ttk.Label(img_frame, text="服務").grid(row=r2, column=0, sticky="w", padx=(0, 4))
+        provider_combo = ttk.Combobox(img_frame, textvariable=self.img_provider_var, state="readonly", width=8, values=("openai", "gemini"))
+        provider_combo.grid(row=r2, column=1, sticky="w", pady=(0, 4))
+        ttk.Label(img_frame, text="風格").grid(row=r2, column=2, sticky="w", padx=(8, 4))
+        img_style_combo = ttk.Combobox(img_frame, textvariable=self.img_style_var, state="readonly", width=8, values=tuple(PROMPT_STYLES))
+        img_style_combo.grid(row=r2, column=3, sticky="w", pady=(0, 4))
+
+        r2 = 1
+        ttk.Label(img_frame, text="API Key").grid(row=r2, column=0, sticky="w", padx=(0, 4))
+        api_key_entry = ttk.Entry(img_frame, textvariable=self.img_api_key_var, show="*", width=28)
+        api_key_entry.grid(row=r2, column=1, columnspan=3, sticky="ew", pady=(0, 4))
+        ttk.Button(img_frame, text="測試", command=self._test_img_api, width=5).grid(row=r2, column=4, padx=(4, 0), pady=(0, 4))
+
+        r2 = 2
+        self.img_gen_btn = ttk.Button(img_frame, text="為每句歌詞生成影像", command=self._start_image_generation)
+        self.img_gen_btn.grid(row=r2, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+        self.img_export_btn = ttk.Button(img_frame, text="匯出歌詞影片", command=self._export_lyric_video)
+        self.img_export_btn.grid(row=r2, column=3, columnspan=2, sticky="ew", pady=(4, 0), padx=(4, 0))
 
         # ── 底部列：播放控制 + 匯出 ──────────────────────────────────
         bottom = ttk.Frame(self, padding=(14, 6, 14, 12))
@@ -1270,6 +1299,26 @@ class LyricsSrtApp(tk.Tk):
                     self.karaoke_btn.configure(state="normal")
                     self._set_progress_status("人聲／伴奏分軌失敗", busy=False)
                     messagebox.showerror(APP_TITLE, f"無法輸出人聲／伴奏：\n{payload}")
+                elif event == "img_test_done":
+                    ok, msg = payload
+                    self._set_progress_status(f"API 測試：{msg}", busy=False)
+                    if ok:
+                        messagebox.showinfo(APP_TITLE, f"API 連線成功！\n{msg}")
+                    else:
+                        messagebox.showerror(APP_TITLE, f"API 連線失敗：\n{msg}")
+                elif event == "img_gen_done":
+                    output_dir, success, fail = payload
+                    self._set_progress_status(f"影像生成完成：成功 {success} 張，失敗 {fail} 張", busy=False)
+                    detail = f"已將 {success} 張歌詞影像儲存至：\n{output_dir}"
+                    if fail:
+                        detail += f"\n\n{fail} 張生成失敗，可重新執行補生成。"
+                    messagebox.showinfo(APP_TITLE, detail)
+                elif event == "img_error":
+                    self._set_progress_status("影像生成失敗", busy=False)
+                    messagebox.showerror(APP_TITLE, f"影像生成失敗：\n{payload}")
+                elif event == "video_done":
+                    self._set_progress_status(f"歌詞影片已匯出：{payload}", busy=False)
+                    messagebox.showinfo(APP_TITLE, f"歌詞影片已完成！\n\n{payload}")
         except queue.Empty:
             pass
         self.after(120, self._poll_events)
@@ -1619,6 +1668,117 @@ class LyricsSrtApp(tk.Tk):
         finally:
             if temporary_dir:
                 shutil.rmtree(temporary_dir, ignore_errors=True)
+
+    # ── AI 影像生成 ───────────────────────────────────────────────────
+
+    def _test_img_api(self) -> None:
+        from image_generator import ImageGenerator
+        provider = self.img_provider_var.get()
+        key = self.img_api_key_var.get().strip()
+        if not key:
+            messagebox.showwarning(APP_TITLE, "請先輸入 API Key。")
+            return
+        self._set_progress_status("正在測試 API 連線…", busy=True)
+        def _do():
+            try:
+                gen = ImageGenerator(provider, key)
+                ok, msg = gen.test_connection()
+                self.events.put(("img_test_done", (ok, msg)))
+            except Exception as exc:
+                self.events.put(("img_test_done", (False, str(exc))))
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _start_image_generation(self) -> None:
+        from image_generator import ImageGenerator
+        from prompts import build_batch_prompts
+        provider = self.img_provider_var.get()
+        key = self.img_api_key_var.get().strip()
+        if not key:
+            messagebox.showwarning(APP_TITLE, "請先輸入 API Key。")
+            return
+        active = [s for s in self.segments if not s.deleted and s.kind == LYRIC_KIND and s.text.strip()]
+        if not active:
+            messagebox.showinfo(APP_TITLE, "沒有可生成影像的歌詞句。")
+            return
+        style_name = self.img_style_var.get()
+        style_preset = PROMPT_STYLES.get(style_name, "")
+        prompts = build_batch_prompts(active, style_preset=style_preset)
+        stem = self.audio_path.stem if self.audio_path else "lyrics"
+        output_dir = Path(str(self.audio_path.parent / f"{stem}_歌詞影像")) if self.audio_path else Path(f"{stem}_歌詞影像")
+        if output_dir.exists() and any(output_dir.iterdir()):
+            if not messagebox.askyesno(APP_TITLE, f"資料夾已存在：\n{output_dir}\n是否覆蓋？"):
+                return
+        self._set_progress_status("正在生成歌詞影像…", busy=True)
+        def _do():
+            try:
+                gen = ImageGenerator(provider, key, style=style_name)
+                def _prog(text):
+                    self.events.put(("status", text))
+                results = gen.generate_batch(prompts, output_dir, on_progress=_prog, delay=1.5)
+                success = sum(1 for r in results if r.success)
+                fail = len(results) - success
+                self.events.put(("img_gen_done", (output_dir, success, fail)))
+            except Exception as exc:
+                self.events.put(("img_error", str(exc)))
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _export_lyric_video(self) -> None:
+        active = [s for s in self.segments if not s.deleted and s.kind == LYRIC_KIND and s.text.strip()]
+        if not active:
+            messagebox.showinfo(APP_TITLE, "沒有歌詞句可匯出影片。")
+            return
+        if not self.audio_path or not self.duration:
+            messagebox.showinfo(APP_TITLE, "請先匯入音檔。")
+            return
+        stem = self.audio_path.stem
+        img_dir = self.audio_path.parent / f"{stem}_歌詞影像"
+        if not img_dir.exists() or not any(img_dir.glob("*.png")):
+            messagebox.showinfo(APP_TITLE, f"找不到影像資料夾：\n{img_dir}\n請先點「為每句歌詞生成影像」。")
+            return
+        output = filedialog.asksaveasfilename(
+            title="匯出歌詞影片", defaultextension=".mp4",
+            initialfile=f"{stem}_歌詞影片.mp4",
+            filetypes=[("MP4 影片", "*.mp4")],
+        )
+        if not output:
+            return
+        self._set_progress_status("正在合成歌詞影片…", busy=True)
+        def _do():
+            try:
+                import subprocess as sp
+                filter_parts = []
+                inputs = ["-i", str(self.audio_path)]
+                idx = 0
+                for i, seg in enumerate(active):
+                    img_file = img_dir / f"lyrics_{i + 1:03d}.png"
+                    if not img_file.exists():
+                        continue
+                    dur = max(0.1, seg.end - seg.start)
+                    inputs += ["-loop", "1", "-t", f"{dur:.3f}", "-i", str(img_file)]
+                    filter_parts.append(f"[{idx + 1}:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1[v{idx}]")
+                    idx += 1
+                if idx == 0:
+                    self.events.put(("img_error", "找不到對應的歌詞影像檔。"))
+                    return
+                concatInputs = "".join(f"[v{i}]" for i in range(idx))
+                filter_parts.append(f"{concatInputs}concat=n={idx}:v=1:a=0[outv]")
+                filter_str = ";".join(filter_parts)
+                cmd = ["ffmpeg", "-y"] + inputs + [
+                    "-filter_complex", filter_str,
+                    "-map", "0:a", "-map", "[outv]",
+                    "-c:v", "libx264", "-preset", "medium", "-crf", "23",
+                    "-c:a", "aac", "-b:a", "192k",
+                    "-shortest", "-movflags", "+faststart",
+                    output,
+                ]
+                result = sp.run(cmd, capture_output=True, text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                if result.returncode != 0:
+                    self.events.put(("img_error", f"ffmpeg 錯誤：\n{result.stderr[-500:]}"))
+                    return
+                self.events.put(("video_done", output))
+            except Exception as exc:
+                self.events.put(("img_error", str(exc)))
+        threading.Thread(target=_do, daemon=True).start()
 
 
 if __name__ == "__main__":
