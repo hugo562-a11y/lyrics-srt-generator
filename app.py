@@ -1561,7 +1561,8 @@ class LyricsSrtApp(tk.Tk):
         halign_map = {"靠左": "left", "置中": "center", "靠右": "right"}
         _, preview_h = self._preview_dimensions()
         base_font = int(self.subtitle_font_size_var.get())
-        scaled_font = max(16, int(base_font * preview_h / 700))
+        zoom = self.preview_zoom_var.get()
+        scaled_font = max(16, int(base_font * preview_h / 700 * zoom))
         return SubtitleStyle(
             font_size=scaled_font,
             text_color=self._hex_to_rgb(self.subtitle_text_color),
@@ -1590,8 +1591,7 @@ class LyricsSrtApp(tk.Tk):
 
     def _preview_dimensions(self) -> tuple[int, int]:
         width, height = PNG_ASPECTS[self.png_aspect_var.get()]
-        zoom = self.preview_zoom_var.get()
-        scale = min(480 / width, 700 / height) * zoom
+        scale = min(480 / width, 700 / height)
         return max(2, int(width * scale)), max(2, int(height * scale))
 
     def _on_preview_scroll(self, event) -> None:
