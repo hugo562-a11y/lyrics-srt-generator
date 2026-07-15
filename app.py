@@ -845,7 +845,7 @@ class LyricsSrtApp(tk.Tk):
         r2 = 2
         self.img_gen_btn = ttk.Button(img_frame, text="為每句歌詞生成影像", command=self._start_image_generation)
         self.img_gen_btn.grid(row=r2, column=0, columnspan=3, sticky="ew", pady=(4, 0))
-        self.img_export_btn = ttk.Button(img_frame, text="匯出歌詞影片", command=self._export_lyric_video)
+        self.img_export_btn = ttk.Button(img_frame, text="匯出歌詞影片（需先生成影像）", command=self._export_lyric_video)
         self.img_export_btn.grid(row=r2, column=3, columnspan=2, sticky="ew", pady=(4, 0), padx=(4, 0))
 
         # ── 底部列：播放控制 + 匯出 ──────────────────────────────────
@@ -1626,6 +1626,8 @@ class LyricsSrtApp(tk.Tk):
             active = [item for item in self.segments if not item.deleted and item.kind == LYRIC_KIND and item.text.strip()]
             width, height = self._preview_dimensions()
             image = render_preview_frame(active, preview_time, width, height, self.png_animation_var.get(), self._current_subtitle_style())
+            if not self.playing and not any(s.start <= preview_time < s.end for s in active) and active:
+                image = render_preview_frame(active, active[0].start + 0.01, width, height, self.png_animation_var.get(), self._current_subtitle_style())
             self.preview_photo = ImageTk.PhotoImage(image)
             self.preview_image_label.configure(image=self.preview_photo, width=width, height=height)
         except Exception:
