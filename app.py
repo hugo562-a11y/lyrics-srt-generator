@@ -1316,7 +1316,7 @@ class LyricsSrtApp(tk.Tk):
                 if reference:
                     level = "逐字" if precise and any(getattr(item, "words", None) for item in raw_segments) else "逐句"
                     self.events.put(("status", f"已以 {len(reference)} 句參考歌詞進行 {level} 節奏對齊。"))
-            self.events.put(("done", _fix_overlapping_segments(add_music_markers(lyrics, self.duration, min_gap))))
+            self.events.put(("done", add_music_markers(lyrics, self.duration, min_gap)))
         except Exception as exc:
             self.events.put(("error", str(exc)))
         finally:
