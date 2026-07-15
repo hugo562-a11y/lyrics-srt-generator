@@ -768,13 +768,11 @@ class LyricsSrtApp(tk.Tk):
         preview_panel.grid(row=0, column=0, sticky="nsew", pady=(0, 4))
         preview_panel.rowconfigure(0, weight=1)
         preview_panel.columnconfigure(0, weight=1)
-        self.preview_image_label = tk.Label(preview_panel, background="#08090b", bd=1, relief="solid")
+        self.preview_image_label = tk.Canvas(preview_panel, background="#08090b", highlightthickness=0)
         self.preview_image_label.grid(row=0, column=0, sticky="nsew")
         self.preview_image_label.bind("<MouseWheel>", self._on_preview_scroll)
         self.preview_image_label.bind("<Button-4>", self._on_preview_scroll)
         self.preview_image_label.bind("<Button-5>", self._on_preview_scroll)
-        self._last_preview_size = (0, 0)
-        self.preview_image_label.bind("<Configure>", self._on_preview_resize)
 
         style_frame = ttk.LabelFrame(right, text=" 字幕樣式 ", padding=(10, 8))
         style_frame.grid(row=1, column=0, sticky="ew")
@@ -1593,10 +1591,10 @@ class LyricsSrtApp(tk.Tk):
 
     def _preview_dimensions(self) -> tuple[int, int]:
         if self.preview_image_label and self.preview_image_label.winfo_exists():
-            pw = self.preview_image_label.winfo_width()
-            ph = self.preview_image_label.winfo_height()
-            if pw > 20 and ph > 20:
-                return pw, ph
+            cw = self.preview_image_label.winfo_width()
+            ch = self.preview_image_label.winfo_height()
+            if cw > 20 and ch > 20:
+                return cw, ch
         width, height = PNG_ASPECTS[self.png_aspect_var.get()]
         scale = min(480 / width, 700 / height)
         return max(2, int(width * scale)), max(2, int(height * scale))
@@ -1613,15 +1611,6 @@ class LyricsSrtApp(tk.Tk):
             current = self.preview_zoom_var.get()
             new_zoom = max(0.3, min(3.0, current + delta * 0.1))
             self.preview_zoom_var.set(round(new_zoom, 2))
-            self._refresh_preview()
-
-    def _on_preview_resize(self, _event) -> None:
-        if not self.preview_image_label or not self.preview_image_label.winfo_exists():
-            return
-        w, h = self.preview_image_label.winfo_width(), self.preview_image_label.winfo_height()
-        lw, lh = self._last_preview_size
-        if abs(w - lw) > 5 or abs(h - lh) > 5:
-            self._last_preview_size = (w, h)
             self._refresh_preview()
 
     def _refresh_preview(self, now: float | None = None) -> None:
@@ -1645,7 +1634,9 @@ class LyricsSrtApp(tk.Tk):
             if not self.playing and not any(s.start <= preview_time < s.end for s in active) and active:
                 image = render_preview_frame(active, active[0].start + 0.01, width, height, self.png_animation_var.get(), self._current_subtitle_style())
             self.preview_photo = ImageTk.PhotoImage(image)
-            self.preview_image_label.configure(image=self.preview_photo)
+            canvas = self.preview_image_label
+            canvas.delete("all")
+            canvas.create_image(canvas.winfo_width() // 2, canvas.winfo_height() // 2, image=self.preview_photo, anchor="center")
         except Exception:
             pass  # 預覽是輔助功能，繪製失敗不應打斷主要編輯流程。
 
