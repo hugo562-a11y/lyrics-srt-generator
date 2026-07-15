@@ -132,10 +132,11 @@ def _draw(frame: Image.Image, item: object, now: float, energy: float, width: in
 
             char_progress = cursor / chars
             progress = (local - karaoke * char_progress) / (.12 / speed)
+            karaoke_reveal = _smooth(max(0.0, min(1.0, (local - karaoke * char_progress) / (.15 / speed))))
             rng = random.Random(_stable_seed(f"{text}_{cursor}"))
             char_phase = rng.random() * 0.4
 
-            alpha = base_alpha
+            alpha = int(base_alpha * karaoke_reveal)
             glow_color = (255, 194, 65)
             extra_scale = 1.0
             extra_x, extra_y = 0.0, 0.0
