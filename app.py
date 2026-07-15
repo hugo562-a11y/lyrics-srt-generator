@@ -606,6 +606,7 @@ class LyricsSrtApp(tk.Tk):
         self.subtitle_offset_y_var = tk.DoubleVar(value=0.0)
         self.anim_intensity_var = tk.DoubleVar(value=1.0)
         self.anim_speed_var = tk.DoubleVar(value=1.0)
+        self.preview_zoom_var = tk.DoubleVar(value=1.0)
         self.img_provider_var = tk.StringVar(value="openai")
         self.img_api_key_var = tk.StringVar(value="")
         self.img_style_var = tk.StringVar(value="電影風")
@@ -769,6 +770,9 @@ class LyricsSrtApp(tk.Tk):
         preview_panel.columnconfigure(0, weight=1)
         self.preview_image_label = tk.Label(preview_panel, background="#08090b", bd=1, relief="solid")
         self.preview_image_label.grid(row=0, column=0, sticky="nsew")
+        self.preview_image_label.bind("<MouseWheel>", self._on_preview_scroll)
+        self.preview_image_label.bind("<Button-4>", self._on_preview_scroll)
+        self.preview_image_label.bind("<Button-5>", self._on_preview_scroll)
 
         style_frame = ttk.LabelFrame(right, text=" 字幕樣式 ", padding=(10, 8))
         style_frame.grid(row=1, column=0, sticky="ew")
@@ -1555,8 +1559,11 @@ class LyricsSrtApp(tk.Tk):
         from subtitle_png_renderer import SubtitleStyle
         valign_map = {"上方": "top", "中間": "middle", "下方": "bottom"}
         halign_map = {"靠左": "left", "置中": "center", "靠右": "right"}
+        _, preview_h = self._preview_dimensions()
+        base_font = int(self.subtitle_font_size_var.get())
+        scaled_font = max(16, int(base_font * preview_h / 700))
         return SubtitleStyle(
-            font_size=int(self.subtitle_font_size_var.get()),
+            font_size=scaled_font,
             text_color=self._hex_to_rgb(self.subtitle_text_color),
             outline_color=self._hex_to_rgb(self.subtitle_outline_color),
             valign=valign_map.get(self.subtitle_valign_var.get(), "bottom"),
@@ -1583,8 +1590,23 @@ class LyricsSrtApp(tk.Tk):
 
     def _preview_dimensions(self) -> tuple[int, int]:
         width, height = PNG_ASPECTS[self.png_aspect_var.get()]
-        scale = min(480 / width, 700 / height)
+        zoom = self.preview_zoom_var.get()
+        scale = min(480 / width, 700 / height) * zoom
         return max(2, int(width * scale)), max(2, int(height * scale))
+
+    def _on_preview_scroll(self, event) -> None:
+        delta = 0
+        if hasattr(event, "delta") and event.delta:
+            delta = 1 if event.delta > 0 else -1
+        elif event.num == 4:
+            delta = 1
+        elif event.num == 5:
+            delta = -1
+        if delta:
+            current = self.preview_zoom_var.get()
+            new_zoom = max(0.3, min(3.0, current + delta * 0.1))
+            self.preview_zoom_var.set(round(new_zoom, 2))
+            self._refresh_preview()
 
     def _refresh_preview(self, now: float | None = None) -> None:
         """依目前主播放位置重繪內嵌字幕預覽；不寫檔、不影響時間軸。
