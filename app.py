@@ -686,16 +686,10 @@ class LyricsSrtApp(tk.Tk):
         self.lyrics_file_var = tk.StringVar(value="未使用參考歌詞")
         ttk.Label(top, textvariable=self.lyrics_file_var, foreground=MUSIC_COLOR).grid(row=0, column=6, sticky="w")
 
-        # ── 左側面板：AI 分析 + 字幕樣式 ────────────────────────────
-        left_panel = ttk.Frame(self)
-        left_panel.grid(row=1, column=0, rowspan=3, sticky="nsew", padx=(14, 0), pady=(6, 0))
-        left_panel.columnconfigure(0, weight=1)
-        left_panel.rowconfigure(1, weight=1)
-
-        # — AI 分析區 —
-        ai_frame = ttk.LabelFrame(left_panel, text=" 本機 AI 分析 ", padding=(10, 8))
-        ai_frame.grid(row=0, column=0, sticky="ew", pady=(0, 4))
-        ai_frame.columnconfigure(5, weight=1)
+        # ── AI 分析區 ───────────────────────────────────────────────
+        ai_frame = ttk.LabelFrame(self, text=" 本機 AI 分析 ", padding=(10, 8))
+        ai_frame.grid(row=1, column=0, sticky="ew", padx=14, pady=(6, 4))
+        ai_frame.columnconfigure(9, weight=1)
         ttk.Label(ai_frame, text="模型").grid(row=0, column=0, padx=(0, 4))
         self.model_var = tk.StringVar(value="large-v3")
         ttk.Combobox(ai_frame, textvariable=self.model_var, width=9, state="readonly", values=("tiny", "base", "small", "medium", "large-v3")).grid(row=0, column=1, padx=(0, 8))
@@ -704,105 +698,47 @@ class LyricsSrtApp(tk.Tk):
         ttk.Combobox(ai_frame, textvariable=self.language_var, width=6, state="readonly", values=("auto", "zh", "ja", "en", "ko")).grid(row=0, column=3, padx=(0, 8))
         ttk.Label(ai_frame, text="運算").grid(row=0, column=4, padx=(0, 4))
         self.device_var = tk.StringVar(value="自動（GPU 優先）")
-        ttk.Combobox(ai_frame, textvariable=self.device_var, width=14, state="readonly", values=("自動（GPU 優先）", "GPU", "CPU")).grid(row=0, column=5, sticky="ew")
+        ttk.Combobox(ai_frame, textvariable=self.device_var, width=14, state="readonly", values=("自動（GPU 優先）", "GPU", "CPU")).grid(row=0, column=5, padx=(0, 8))
+        self.analyze_btn = ttk.Button(ai_frame, text="開始 AI 分析", command=self.analyze)
+        self.analyze_btn.grid(row=0, column=6, padx=(14, 0))
         opts_row = ttk.Frame(ai_frame)
-        opts_row.grid(row=1, column=0, columnspan=6, sticky="w", pady=(6, 0))
+        opts_row.grid(row=1, column=0, columnspan=7, sticky="w", pady=(6, 0))
         self.precise_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(opts_row, text="精準逐字對齊", variable=self.precise_var).pack(side="left", padx=(0, 10))
         self.vocals_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(opts_row, text="分離人聲", variable=self.vocals_var).pack(side="left", padx=(0, 10))
         self.force_align_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(opts_row, text="強制對齊", variable=self.force_align_var).pack(side="left")
-        param_row = ttk.Frame(ai_frame)
-        param_row.grid(row=2, column=0, columnspan=6, sticky="w", pady=(4, 0))
-        ttk.Label(param_row, text="最短音樂段").grid(row=0, column=0, padx=(0, 2))
+        ttk.Checkbutton(opts_row, text="強制對齊", variable=self.force_align_var).pack(side="left", padx=(0, 16))
+        ttk.Label(opts_row, text="最短音樂段").pack(side="left", padx=(0, 2))
         self.min_gap_var = tk.StringVar(value="1.2")
-        ttk.Entry(param_row, textvariable=self.min_gap_var, width=5).grid(row=0, column=1, padx=(0, 8))
-        ttk.Label(param_row, text="隨機性").grid(row=0, column=2, padx=(0, 2))
+        ttk.Entry(opts_row, textvariable=self.min_gap_var, width=5).pack(side="left", padx=(0, 8))
+        ttk.Label(opts_row, text="隨機性").pack(side="left", padx=(0, 2))
         self.temperature_var = tk.StringVar(value="0")
-        ttk.Entry(param_row, textvariable=self.temperature_var, width=4).grid(row=0, column=3, padx=(0, 8))
-        ttk.Label(param_row, text="非語音").grid(row=0, column=4, padx=(0, 2))
+        ttk.Entry(opts_row, textvariable=self.temperature_var, width=4).pack(side="left", padx=(0, 8))
+        ttk.Label(opts_row, text="非語音").pack(side="left", padx=(0, 2))
         self.no_speech_var = tk.StringVar(value="0.4")
-        ttk.Entry(param_row, textvariable=self.no_speech_var, width=4).grid(row=0, column=5, padx=(0, 8))
-        self.analyze_btn = ttk.Button(ai_frame, text="開始 AI 分析", command=self.analyze)
-        self.analyze_btn.grid(row=3, column=0, columnspan=6, sticky="ew", pady=(8, 0))
+        ttk.Entry(opts_row, textvariable=self.no_speech_var, width=4).pack(side="left")
         status_row = ttk.Frame(ai_frame)
-        status_row.grid(row=4, column=0, columnspan=6, sticky="ew", pady=(6, 0))
+        status_row.grid(row=2, column=0, columnspan=7, sticky="ew", pady=(6, 0))
         status_row.columnconfigure(0, weight=1)
         self.progress_var = tk.StringVar(value="等待匯入音檔")
         ttk.Label(status_row, textvariable=self.progress_var, foreground=DARK_ACCENT).grid(row=0, column=0, sticky="w")
-        self.progress_bar = ttk.Progressbar(status_row, mode="indeterminate", length=160)
+        self.progress_bar = ttk.Progressbar(status_row, mode="indeterminate", length=180)
         self.progress_bar.grid(row=0, column=1, sticky="e", padx=(8, 0))
 
-        # — 字幕樣式區 —
-        style_frame = ttk.LabelFrame(left_panel, text=" 字幕樣式 ", padding=(10, 8))
-        style_frame.grid(row=1, column=0, sticky="nsew", pady=(4, 0))
-        style_frame.columnconfigure(3, weight=1)
+        # ── 中央：聲波 + 歌詞列表 ───────────────────────────────────
+        center = ttk.Frame(self)
+        center.grid(row=2, column=0, sticky="nsew", padx=14, pady=(0, 4))
+        center.columnconfigure(0, weight=1)
+        center.rowconfigure(1, weight=1)
 
-        row_i = 0
-        ttk.Label(style_frame, text="比例").grid(row=row_i, column=0, sticky="w", padx=(0, 4))
-        self.png_aspect_var = tk.StringVar(value="16:9（1920×1080）")
-        aspect_combo = ttk.Combobox(style_frame, textvariable=self.png_aspect_var, state="readonly", width=14, values=tuple(PNG_ASPECTS))
-        aspect_combo.grid(row=row_i, column=1, columnspan=2, sticky="w", pady=(0, 4))
-        aspect_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_preview())
-        ttk.Label(style_frame, text="動畫").grid(row=row_i, column=3, sticky="w", padx=(12, 4))
-        self.png_animation_var = tk.StringVar(value="逐字點亮")
-        animation_combo = ttk.Combobox(style_frame, textvariable=self.png_animation_var, state="readonly", width=9, values=PNG_ANIMATION_STYLES)
-        animation_combo.grid(row=row_i, column=4, columnspan=2, sticky="w", pady=(0, 4))
-        animation_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_preview())
-
-        row_i = 1
-        ttk.Label(style_frame, text="字級").grid(row=row_i, column=0, sticky="w", padx=(0, 4))
-        size_spin = ttk.Spinbox(style_frame, from_=24, to=160, increment=2, textvariable=self.subtitle_font_size_var, width=5, command=self._refresh_preview)
-        size_spin.grid(row=row_i, column=1, sticky="w", pady=(0, 4))
-        size_spin.bind("<KeyRelease>", lambda _event: self._refresh_preview())
-        self.text_color_btn = tk.Button(style_frame, text="文字色", width=6, command=self._pick_text_color,
-                                         background=self.subtitle_text_color, activebackground=self.subtitle_text_color)
-        self.text_color_btn.grid(row=row_i, column=2, padx=(8, 0), pady=(0, 4))
-        self.outline_color_btn = tk.Button(style_frame, text="外框色", width=6, command=self._pick_outline_color,
-                                            background=self.subtitle_outline_color, activebackground=self.subtitle_outline_color,
-                                            foreground="#ffffff", activeforeground="#ffffff")
-        self.outline_color_btn.grid(row=row_i, column=3, padx=(4, 0), pady=(0, 4))
-
-        row_i = 2
-        ttk.Label(style_frame, text="垂直").grid(row=row_i, column=0, sticky="w", padx=(0, 4))
-        valign_combo = ttk.Combobox(style_frame, textvariable=self.subtitle_valign_var, state="readonly", width=5, values=("上方", "中間", "下方"))
-        valign_combo.grid(row=row_i, column=1, sticky="w", pady=(0, 4))
-        valign_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_preview())
-        ttk.Label(style_frame, text="水平").grid(row=row_i, column=2, sticky="w", padx=(8, 4))
-        halign_combo = ttk.Combobox(style_frame, textvariable=self.subtitle_halign_var, state="readonly", width=5, values=("靠左", "置中", "靠右"))
-        halign_combo.grid(row=row_i, column=3, sticky="w", pady=(0, 4))
-        halign_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_preview())
-
-        row_i = 3
-        ttk.Label(style_frame, text="左右").grid(row=row_i, column=0, sticky="w", padx=(0, 4))
-        ttk.Scale(style_frame, from_=-0.4, to=0.4, variable=self.subtitle_offset_x_var, length=100, command=lambda _v: self._refresh_preview()).grid(row=row_i, column=1, columnspan=2, sticky="w", pady=(0, 4))
-        ttk.Label(style_frame, text="上下").grid(row=row_i, column=3, sticky="w", padx=(12, 4))
-        ttk.Scale(style_frame, from_=-0.4, to=0.4, variable=self.subtitle_offset_y_var, length=100, command=lambda _v: self._refresh_preview()).grid(row=row_i, column=4, columnspan=2, sticky="w", pady=(0, 4))
-
-        row_i = 4
-        ttk.Label(style_frame, text="強度").grid(row=row_i, column=0, sticky="w", padx=(0, 4))
-        ttk.Scale(style_frame, from_=0.0, to=3.0, variable=self.anim_intensity_var, length=100, command=lambda _v: self._refresh_preview()).grid(row=row_i, column=1, columnspan=2, sticky="w", pady=(0, 0))
-        ttk.Label(style_frame, text="速度").grid(row=row_i, column=3, sticky="w", padx=(12, 4))
-        ttk.Scale(style_frame, from_=0.2, to=3.0, variable=self.anim_speed_var, length=100, command=lambda _v: self._refresh_preview()).grid(row=row_i, column=4, columnspan=2, sticky="w", pady=(0, 0))
-
-        # ── 右側：字幕預覽（佔滿右側全高） ──────────────────────────
-        preview_panel = ttk.LabelFrame(self, text=" 字幕預覽 ", padding=8)
-        preview_panel.grid(row=1, column=1, rowspan=3, sticky="nsew", padx=(6, 14), pady=(6, 0))
-        preview_panel.rowconfigure(0, weight=1)
-        preview_panel.columnconfigure(0, weight=1)
-        self.preview_image_label = tk.Label(preview_panel, background="#08090b", bd=1, relief="solid")
-        self.preview_image_label.grid(row=0, column=0, sticky="nsew")
-
-        # ── 中央：聲波與時間軸 ──────────────────────────────────────
-        wave_frame = ttk.LabelFrame(self, text=" 聲波與時間軸 ", padding=(8, 4))
-        wave_frame.grid(row=2, column=0, sticky="ew", padx=(0, 6), pady=(0, 4))
+        wave_frame = ttk.LabelFrame(center, text=" 聲波與時間軸 ", padding=(8, 4))
+        wave_frame.grid(row=0, column=0, sticky="ew", pady=(0, 4))
         self.waveform = WaveformView(wave_frame, on_seek=self._waveform_seek, on_select=self._activate_segment, on_edit=self._waveform_edit)
         self.waveform.pack(fill="both", expand=True)
 
-        # ── 中央：歌詞時間軸列表 ────────────────────────────────────
-        body = ttk.LabelFrame(self, text=" 歌詞時間軸 ", padding=(8, 4))
-        body.grid(row=3, column=0, sticky="nsew", padx=(0, 6), pady=(0, 4))
+        body = ttk.LabelFrame(center, text=" 歌詞時間軸 ", padding=(8, 4))
+        body.grid(row=1, column=0, sticky="nsew")
         body.columnconfigure(0, weight=1)
         body.rowconfigure(0, weight=1)
         columns = ("start", "end", "kind", "text")
@@ -816,6 +752,68 @@ class LyricsSrtApp(tk.Tk):
         self.tree.configure(yscrollcommand=scroll.set)
         self.tree.bind("<ButtonRelease-1>", self.play_clicked_row)
         self.tree.bind("<Double-1>", self._begin_edit)
+
+        # ── 右側：字幕預覽 + 字幕樣式 ──────────────────────────────
+        right = ttk.Frame(self)
+        right.grid(row=1, column=1, rowspan=3, sticky="nsew", padx=(0, 14), pady=(6, 0))
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(0, weight=1)
+
+        preview_panel = ttk.LabelFrame(right, text=" 字幕預覽 ", padding=8)
+        preview_panel.grid(row=0, column=0, sticky="nsew", pady=(0, 4))
+        preview_panel.rowconfigure(0, weight=1)
+        preview_panel.columnconfigure(0, weight=1)
+        self.preview_image_label = tk.Label(preview_panel, background="#08090b", bd=1, relief="solid")
+        self.preview_image_label.grid(row=0, column=0, sticky="nsew")
+
+        style_frame = ttk.LabelFrame(right, text=" 字幕樣式 ", padding=(10, 8))
+        style_frame.grid(row=1, column=0, sticky="ew")
+        style_frame.columnconfigure(5, weight=1)
+
+        r = 0
+        ttk.Label(style_frame, text="比例").grid(row=r, column=0, sticky="w", padx=(0, 4))
+        self.png_aspect_var = tk.StringVar(value="16:9（1920×1080）")
+        aspect_combo = ttk.Combobox(style_frame, textvariable=self.png_aspect_var, state="readonly", width=14, values=tuple(PNG_ASPECTS))
+        aspect_combo.grid(row=r, column=1, sticky="w", pady=(0, 4))
+        aspect_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_preview())
+        ttk.Label(style_frame, text="動畫").grid(row=r, column=2, sticky="w", padx=(12, 4))
+        self.png_animation_var = tk.StringVar(value="逐字點亮")
+        animation_combo = ttk.Combobox(style_frame, textvariable=self.png_animation_var, state="readonly", width=9, values=PNG_ANIMATION_STYLES)
+        animation_combo.grid(row=r, column=3, sticky="w", pady=(0, 4))
+        animation_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_preview())
+        ttk.Label(style_frame, text="字級").grid(row=r, column=4, sticky="w", padx=(12, 4))
+        size_spin = ttk.Spinbox(style_frame, from_=24, to=160, increment=2, textvariable=self.subtitle_font_size_var, width=5, command=self._refresh_preview)
+        size_spin.grid(row=r, column=5, sticky="w", pady=(0, 4))
+        size_spin.bind("<KeyRelease>", lambda _event: self._refresh_preview())
+
+        r = 1
+        self.text_color_btn = tk.Button(style_frame, text="文字色", width=6, command=self._pick_text_color,
+                                         background=self.subtitle_text_color, activebackground=self.subtitle_text_color)
+        self.text_color_btn.grid(row=r, column=0, sticky="w", pady=(0, 4))
+        self.outline_color_btn = tk.Button(style_frame, text="外框色", width=6, command=self._pick_outline_color,
+                                            background=self.subtitle_outline_color, activebackground=self.subtitle_outline_color,
+                                            foreground="#ffffff", activeforeground="#ffffff")
+        self.outline_color_btn.grid(row=r, column=1, sticky="w", padx=(4, 0), pady=(0, 4))
+        ttk.Label(style_frame, text="垂直").grid(row=r, column=2, sticky="w", padx=(12, 4))
+        valign_combo = ttk.Combobox(style_frame, textvariable=self.subtitle_valign_var, state="readonly", width=5, values=("上方", "中間", "下方"))
+        valign_combo.grid(row=r, column=3, sticky="w", pady=(0, 4))
+        valign_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_preview())
+        ttk.Label(style_frame, text="水平").grid(row=r, column=4, sticky="w", padx=(12, 4))
+        halign_combo = ttk.Combobox(style_frame, textvariable=self.subtitle_halign_var, state="readonly", width=5, values=("靠左", "置中", "靠右"))
+        halign_combo.grid(row=r, column=5, sticky="w", pady=(0, 4))
+        halign_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_preview())
+
+        r = 2
+        ttk.Label(style_frame, text="左右").grid(row=r, column=0, sticky="w", padx=(0, 4))
+        ttk.Scale(style_frame, from_=-0.4, to=0.4, variable=self.subtitle_offset_x_var, length=80, command=lambda _v: self._refresh_preview()).grid(row=r, column=1, columnspan=2, sticky="ew", pady=(0, 4))
+        ttk.Label(style_frame, text="上下").grid(row=r, column=3, sticky="w", padx=(12, 4))
+        ttk.Scale(style_frame, from_=-0.4, to=0.4, variable=self.subtitle_offset_y_var, length=80, command=lambda _v: self._refresh_preview()).grid(row=r, column=4, columnspan=2, sticky="ew", pady=(0, 4))
+
+        r = 3
+        ttk.Label(style_frame, text="強度").grid(row=r, column=0, sticky="w", padx=(0, 4))
+        ttk.Scale(style_frame, from_=0.0, to=3.0, variable=self.anim_intensity_var, length=80, command=lambda _v: self._refresh_preview()).grid(row=r, column=1, columnspan=2, sticky="ew")
+        ttk.Label(style_frame, text="速度").grid(row=r, column=3, sticky="w", padx=(12, 4))
+        ttk.Scale(style_frame, from_=0.2, to=3.0, variable=self.anim_speed_var, length=80, command=lambda _v: self._refresh_preview()).grid(row=r, column=4, columnspan=2, sticky="ew")
 
         # ── 底部列：播放控制 + 匯出 ──────────────────────────────────
         bottom = ttk.Frame(self, padding=(14, 6, 14, 12))
