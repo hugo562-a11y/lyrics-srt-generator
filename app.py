@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import difflib
+import json
 import os
 import queue
 import re
@@ -608,6 +609,8 @@ class LyricsSrtApp(tk.Tk):
         self._apply_dark_titlebar()
         self.bind_all("<Control-z>", self.undo)
         self.bind_all("<Control-y>", self.redo)
+        self.bind_all("<Control-s>", lambda _e: self.save_project())
+        self.bind_all("<Control-o>", lambda _e: self.load_project())
         # 空白鍵＝播放／暫停；取代按鈕與勾選框原本「space＝按下」的預設行為，
         # 但不可回傳 "break"，否則會連 bindtags 後面的 all（全域）都一併擋掉，
         # 導致焦點停在任何按鈕上時（點擊按鈕後 ttk 會自動把焦點留在該按鈕）空白鍵完全沒反應。
@@ -675,9 +678,11 @@ class LyricsSrtApp(tk.Tk):
         ttk.Label(top, textvariable=self.file_var, anchor="w").grid(row=0, column=1, sticky="ew")
         self.duration_var = tk.StringVar(value="長度：--")
         ttk.Label(top, textvariable=self.duration_var).grid(row=0, column=2, padx=(10, 0))
-        ttk.Button(top, text="匯入歌詞檔", command=self.import_lyrics).grid(row=0, column=3, padx=(16, 8))
+        ttk.Button(top, text="存檔", command=self.save_project).grid(row=0, column=3, padx=(16, 4))
+        ttk.Button(top, text="載入", command=self.load_project).grid(row=0, column=4, padx=(4, 8))
+        ttk.Button(top, text="匯入歌詞檔", command=self.import_lyrics).grid(row=0, column=5, padx=(16, 8))
         self.lyrics_file_var = tk.StringVar(value="未使用參考歌詞")
-        ttk.Label(top, textvariable=self.lyrics_file_var, foreground=MUSIC_COLOR).grid(row=0, column=4, sticky="w")
+        ttk.Label(top, textvariable=self.lyrics_file_var, foreground=MUSIC_COLOR).grid(row=0, column=6, sticky="w")
 
         controls = ttk.LabelFrame(self, text="本機 AI 分析", padding=10)
         controls.grid(row=1, column=0, sticky="ew", padx=14, pady=6)
@@ -1351,6 +1356,96 @@ class LyricsSrtApp(tk.Tk):
                 handle.write(f"{number}\n{srt_timecode(item.start)} --> {srt_timecode(item.end)}\n{item.text}\n\n")
         self._set_progress_status(f"已匯出：{output}", busy=False)
         messagebox.showinfo(APP_TITLE, "SRT 匯出完成。")
+
+    def save_project(self) -> None:
+        initial = (self.audio_path.stem + ".lrproj") if self.audio_path else "project.lrproj"
+        output = filedialog.asksaveasfilename(title="儲存專案", defaultextension=".lrproj", initialfile=initial, filetypes=[("歌詞專案", "*.lrproj")])
+        if not output:
+            return
+        data = {
+            "version": 1,
+            "audio_path": str(self.audio_path) if self.audio_path else None,
+            "duration": self.duration,
+            "reference_lyrics": self.reference_lyrics,
+            "segments": [
+                {"start": s.start, "end": s.end, "kind": s.kind, "text": s.text, "deleted": s.deleted}
+                for s in self.segments
+            ],
+            "settings": {
+                "png_aspect": self.png_aspect_var.get(),
+                "png_animation": self.png_animation_var.get(),
+                "font_size": self.subtitle_font_size_var.get(),
+                "text_color": self.subtitle_text_color,
+                "outline_color": self.subtitle_outline_color,
+                "valign": self.subtitle_valign_var.get(),
+                "halign": self.subtitle_halign_var.get(),
+                "offset_x": self.subtitle_offset_x_var.get(),
+                "offset_y": self.subtitle_offset_y_var.get(),
+                "anim_intensity": self.anim_intensity_var.get(),
+                "anim_speed": self.anim_speed_var.get(),
+                "model": self.model_var.get(),
+                "language": self.language_var.get(),
+                "device": self.device_var.get(),
+                "precise": self.precise_var.get(),
+                "vocals": self.vocals_var.get(),
+                "force_align": self.force_align_var.get(),
+            },
+        }
+        with open(output, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        self._set_progress_status(f"已儲存專案：{output}", busy=False)
+
+    def load_project(self) -> None:
+        selected = filedialog.askopenfilename(title="載入專案", filetypes=[("歌詞專案", "*.lrproj")])
+        if not selected:
+            return
+        try:
+            with open(selected, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as exc:
+            messagebox.showerror(APP_TITLE, f"無法讀取專案檔：{exc}")
+            return
+        try:
+            self.stop_playback(reset_position=True)
+            audio_str = data.get("audio_path")
+            if audio_str and Path(audio_str).exists():
+                self.audio_path = Path(audio_str)
+                self.duration = float(data.get("duration", 0))
+                self.file_var.set(str(self.audio_path))
+                self.duration_var.set(f"長度：{format_timecode(self.duration)}")
+                self.play_slider.configure(to=max(0.01, self.duration))
+            self.reference_lyrics = list(data.get("reference_lyrics", []))
+            if self.reference_lyrics:
+                self.lyrics_file_var.set(f"參考歌詞已載入（{len(self.reference_lyrics)} 句）")
+            self.segments = [
+                Segment(float(s["start"]), float(s["end"]), s["kind"], s["text"], s.get("deleted", False))
+                for s in data.get("segments", [])
+            ]
+            self.undo_stack.clear()
+            self.redo_stack.clear()
+            s = data.get("settings", {})
+            if "png_aspect" in s: self.png_aspect_var.set(s["png_aspect"])
+            if "png_animation" in s: self.png_animation_var.set(s["png_animation"])
+            if "font_size" in s: self.subtitle_font_size_var.set(int(s["font_size"]))
+            if "text_color" in s: self.subtitle_text_color = s["text_color"]
+            if "outline_color" in s: self.subtitle_outline_color = s["outline_color"]
+            if "valign" in s: self.subtitle_valign_var.set(s["valign"])
+            if "halign" in s: self.subtitle_halign_var.set(s["halign"])
+            if "offset_x" in s: self.subtitle_offset_x_var.set(float(s["offset_x"]))
+            if "offset_y" in s: self.subtitle_offset_y_var.set(float(s["offset_y"]))
+            if "anim_intensity" in s: self.anim_intensity_var.set(float(s["anim_intensity"]))
+            if "anim_speed" in s: self.anim_speed_var.set(float(s["anim_speed"]))
+            if "model" in s: self.model_var.set(s["model"])
+            if "language" in s: self.language_var.set(s["language"])
+            if "device" in s: self.device_var.set(s["device"])
+            if "precise" in s: self.precise_var.set(bool(s["precise"]))
+            if "vocals" in s: self.vocals_var.set(bool(s["vocals"]))
+            if "force_align" in s: self.force_align_var.set(bool(s["force_align"]))
+            self.refresh_tree()
+            self._refresh_preview()
+            self._set_progress_status(f"已載入專案：{selected}", busy=False)
+        except Exception as exc:
+            messagebox.showerror(APP_TITLE, f"載入專案失敗：{exc}")
 
     def export_dynamic_png(self) -> None:
         """以目前表格（含使用者手動校正後的時間）輸出透明動態字幕序列。"""
