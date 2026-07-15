@@ -1301,13 +1301,12 @@ class LyricsSrtApp(tk.Tk):
             if not lyrics:
                 if reference and intro_filter:
                     self.events.put(("status", "正在辨識前奏結束與第一句人聲位置…"))
-                    # 偵測前奏時使用標準預設的 0.6 門檻，確保不會被過於嚴格的設定誤殺
-                    onset_raw, _ = model.transcribe(str(source_path), language=None if language == "auto" else language, vad_filter=True, vad_parameters=vad_params, condition_on_previous_text=False, beam_size=5, temperature=temperature)
+                    onset_raw, _ = model.transcribe(str(source_path), language=None if language == "auto" else language, vad_filter=True, condition_on_previous_text=False, beam_size=5)
                     onset_segments = normalize_lyrics(list(onset_raw))
                     if onset_segments:
                         vocal_onset = onset_segments[0].start
                 self.events.put(("status", "正在分析音訊與逐字時間點，請稍候…"))
-                raw, _ = model.transcribe(str(source_path), language=None if language == "auto" else language, vad_filter=not bool(reference), vad_parameters=vad_params if reference else None, condition_on_previous_text=False, beam_size=5, word_timestamps=precise, temperature=temperature, no_speech_threshold=no_speech)
+                raw, _ = model.transcribe(str(source_path), language=None if language == "auto" else language, vad_filter=not bool(reference), condition_on_previous_text=False, beam_size=5, word_timestamps=precise)
                 raw_segments = list(raw)
                 recognized = word_timing_anchors(raw_segments) if precise else normalize_lyrics(raw_segments)
                 if intro_filter and vocal_onset >= min_gap:
