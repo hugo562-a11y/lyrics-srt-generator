@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import random
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -12,22 +13,35 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 
 Progress = Callable[[str], None]
-ANIMATION_STYLES = ("逐字點亮", "彈跳聚焦", "滑入淡出", "電影柔和")
+ANIMATION_STYLES = (
+    "逐字點亮", "彈跳聚焦", "滑入淡出", "電影柔和",
+    "暴風雨", "脈衝擴散", "水波震盪", "雷射掃過",
+    "氣泡彈出", "殘影拖曳", "閃爍霓虹", "粒子爆破",
+)
 
 
 @dataclass
 class SubtitleStyle:
-    """使用者可調整的字幕外觀與位置設定。"""
     font_size: int = 64
-    text_color: tuple[int, int, int] = (246, 247, 244)
+    text_color: tuple[int, int, int] = (246, 247, 224)
     outline_color: tuple[int, int, int] = (16, 12, 9)
-    valign: str = "bottom"  # "top" | "middle" | "bottom"
-    halign: str = "center"  # "left" | "center" | "right"
-    offset_x: float = 0.0   # 畫面寬度的比例（-0.5～0.5）
-    offset_y: float = 0.0   # 畫面高度的比例（-0.5～0.5）
+    valign: str = "bottom"
+    halign: str = "center"
+    offset_x: float = 0.0
+    offset_y: float = 0.0
+    anim_intensity: float = 1.0
+    anim_speed: float = 1.0
 
 
 DEFAULT_STYLE = SubtitleStyle()
+
+_SEED_CACHE: dict[str, int] = {}
+
+
+def _stable_seed(key: str) -> int:
+    if key not in _SEED_CACHE:
+        _SEED_CACHE[key] = random.Random(hash(key)).randint(0, 999999)
+    return _SEED_CACHE[key]
 
 
 def _font_path() -> Path:
@@ -57,8 +71,6 @@ def _fit_lines(text: str, font_path: Path, max_width: int, size: int) -> tuple[l
         font = ImageFont.truetype(str(font_path), size, index=0)
         if font.getlength(text) <= max_width:
             return [text], font
-        # Chinese does not require spaces between words; wrap one glyph at a time
-        # so portrait and square exports remain inside their safe area.
         line, lines = "", []
         for character in text:
             candidate = line + character
@@ -76,15 +88,19 @@ def _draw(frame: Image.Image, item: object, now: float, energy: float, width: in
     font_path = _font_path()
     lines, font = _fit_lines(text, font_path, int(width * 0.80), subtitle_style.font_size)
     local, duration = now - start, end - start
-    enter_duration = .45 if style == "電影柔和" else .20
-    leave_duration = .32 if style == "電影柔和" else .16
+    intensity = subtitle_style.anim_intensity
+    speed = subtitle_style.anim_speed
+
+    enter_duration = (.45 if style == "電影柔和" else .20) / speed
+    leave_duration = (.32 if style == "電影柔和" else .16) / speed
     enter, leave = _smooth(local / enter_duration), _smooth((end - now) / leave_duration)
-    alpha = int(255 * min(enter, leave))
-    pop = 1 + .12 * math.sin(min(local / .28, 1) * math.pi) if style == "彈跳聚焦" else 1
-    scale = (1 + energy * .03) * pop
+    base_alpha = int(255 * min(enter, leave))
+
     line_h = int(font.size * 1.34)
     block_h = line_h * len(lines)
-    motion = height * (.070 if style == "滑入淡出" else .035)
+
+    chars = max(1, len(text.replace(" ", "")))
+    karaoke = min(duration * .70, max(.55, duration - .28))
 
     margin_y = height * 0.08
     if subtitle_style.valign == "top":
@@ -93,11 +109,11 @@ def _draw(frame: Image.Image, item: object, now: float, energy: float, width: in
         base_top = (height - block_h) / 2
     else:
         base_top = height - margin_y - block_h
-    top = base_top + int((1 - enter) * motion - (1 - leave) * height * .018) + int(subtitle_style.offset_y * height)
-
     margin_x = width * 0.10
-    chars = max(1, len(text.replace(" ", ""))); karaoke = min(duration * .70, max(.55, duration - .28)); cursor = 0
+
     layer = Image.new("RGBA", frame.size, (0, 0, 0, 0))
+    cursor = 0
+
     for line_no, line in enumerate(lines):
         widths = [font.getlength(ch) for ch in line]
         line_w = sum(widths)
@@ -108,29 +124,194 @@ def _draw(frame: Image.Image, item: object, now: float, energy: float, width: in
         else:
             x = (width - line_w) / 2
         x += subtitle_style.offset_x * width
-        y = top + line_no * line_h
-        for char, char_w in zip(line, widths):
-            if char == " ": x += char_w; continue
-            progress = (local - karaoke * cursor / chars) / .12
-            karaoke_on = style == "逐字點亮"
-            lit, active = (_smooth(progress), max(0., 1 - abs(progress - .5) * 1.6)) if karaoke_on else (0., 0.)
-            color = (255, 194, 65, alpha) if karaoke_on and lit > .55 else (*subtitle_style.text_color, alpha)
-            glyph = Image.new("RGBA", (int(char_w + 70), font.size + 90), (0, 0, 0, 0))
-            ImageDraw.Draw(glyph).text((35, 20), char, font=font, fill=color, stroke_width=max(3, font.size // 18), stroke_fill=(*subtitle_style.outline_color, int(alpha * .9)))
-            glow = glyph.filter(ImageFilter.GaussianBlur(max(3, font.size // (14 if style == "電影柔和" else 11))))
-            glow.putalpha(glow.getchannel("A").point(lambda value: int(value * (.14 if style == "電影柔和" else .27 + active * .2))))
-            layer.alpha_composite(glow, (int(x - 35), int(y - 20)))
-            char_scale = scale * (1 + .075 * active)
-            if char_scale != 1:
-                glyph = glyph.resize((int(glyph.width * char_scale), int(glyph.height * char_scale)), Image.Resampling.LANCZOS)
-                position = (int(x + char_w / 2 - glyph.width / 2), int(y + font.size / 2 - glyph.height / 2))
-            else: position = (int(x - 35), int(y - 20))
-            layer.alpha_composite(glyph, position); x += char_w; cursor += 1
+        y = base_top + line_no * line_h
+
+        for char_i, (char, char_w) in enumerate(zip(line, widths)):
+            if char == " ":
+                x += char_w; continue
+
+            char_progress = cursor / chars
+            progress = (local - karaoke * char_progress) / (.12 / speed)
+            rng = random.Random(_stable_seed(f"{text}_{cursor}"))
+            char_phase = rng.random() * 0.4
+
+            alpha = base_alpha
+            glow_color = (255, 194, 65)
+            extra_scale = 1.0
+            extra_x, extra_y = 0.0, 0.0
+            extra_rotation = 0.0
+            ghost_trail = 0
+            glow_radius = font.size // (11 if style != "電影柔和" else 14)
+            glow_alpha_mult = 0.27
+            stroke_w = max(3, font.size // 18)
+
+            if style == "逐字點亮":
+                lit = _smooth(progress)
+                active = max(0., 1 - abs(progress - .5) * 1.6)
+                if lit > .55:
+                    glow_color = (255, 194, 65)
+                else:
+                    glow_color = subtitle_style.text_color
+                extra_scale = 1 + .15 * active * intensity
+                glow_alpha_mult = 0.27 + 0.25 * active * intensity
+
+            elif style == "彈跳聚焦":
+                bounce = math.sin(min(local / (.18 / speed), 1) * math.pi)
+                extra_scale = 1 + .25 * bounce * intensity + energy * .05 * intensity
+                active = max(0., 1 - abs(progress - .5) * 1.6)
+                extra_y = -int(12 * bounce * intensity) if active > .3 else 0
+                glow_alpha_mult = 0.2 + 0.35 * active * intensity
+
+            elif style == "滑入淡出":
+                motion = height * .070
+                slide = (1 - enter) * motion - (1 - leave) * height * .018
+                extra_y = int(slide)
+                extra_scale = 1 + energy * .04 * intensity
+
+            elif style == "電影柔和":
+                extra_scale = 1 + energy * .03 * intensity
+                glow_alpha_mult = 0.14
+
+            elif style == "暴風雨":
+                shake_t = local * 12 * speed
+                shake_x = math.sin(shake_t + char_phase * 20) * 6 * intensity * energy
+                shake_y = math.cos(shake_t * 1.3 + char_phase * 15) * 4 * intensity * energy
+                extra_x, extra_y = int(shake_x), int(shake_y)
+                flash = max(0, math.sin(shake_t * 0.5 + char_phase * 10))
+                extra_scale = 1 + 0.18 * flash * intensity
+                glow_color = (255, int(100 + 94 * flash), int(65 + 120 * flash))
+                glow_alpha_mult = 0.3 + 0.5 * flash * intensity
+                stroke_w = max(4, font.size // 14)
+
+            elif style == "脈衝擴散":
+                pulse = math.sin(min(local / (.25 / speed), 1) * math.pi)
+                ring_r = int(pulse * font.size * 1.5 * intensity)
+                extra_scale = 1 + 0.2 * pulse * intensity
+                glow_alpha_mult = 0.2 + 0.4 * pulse * intensity
+                glow_color = (100, 180, 255)
+                # ring glow
+                if ring_r > 5:
+                    ring_layer = Image.new("RGBA", frame.size, (0, 0, 0, 0))
+                    cx = int(x + char_w / 2)
+                    cy = int(y + font.size / 2)
+                    rd = ImageDraw.Draw(ring_layer)
+                    ring_alpha = int(80 * pulse * intensity)
+                    for r_off in range(-2, 3):
+                        rd.ellipse([cx - ring_r + r_off, cy - ring_r + r_off, cx + ring_r - r_off, cy + ring_r - r_off],
+                                   outline=(100, 200, 255, max(0, ring_alpha - abs(r_off) * 15)), width=2)
+                    layer.alpha_composite(ring_layer)
+
+            elif style == "水波震盪":
+                wave = math.sin(local * 8 * speed + char_phase * 12) * intensity
+                wave2 = math.cos(local * 6 * speed + char_phase * 8) * intensity
+                extra_y = int(wave * 10)
+                extra_x = int(wave2 * 5)
+                extra_scale = 1 + 0.08 * abs(wave) * intensity
+                glow_alpha_mult = 0.2 + 0.15 * abs(wave)
+                glow_color = (80, 220, 255)
+
+            elif style == "雷射掃過":
+                sweep_pos = (local * 2.5 * speed) % 1.5 - 0.25
+                char_pos = char_progress
+                dist = abs(sweep_pos - char_pos)
+                hit = max(0, 1 - dist * 4)
+                extra_scale = 1 + 0.3 * hit * intensity
+                extra_y = -int(8 * hit * intensity)
+                alpha = min(255, int(base_alpha * (0.4 + 0.6 * (0.3 + 0.7 * hit))))
+                glow_color = (255, 50, 50) if hit > 0.3 else (255, 200, 100)
+                glow_alpha_mult = 0.2 + 0.6 * hit * intensity
+                stroke_w = max(4, font.size // 12) if hit > 0.3 else stroke_w
+
+            elif style == "氣泡彈出":
+                pop = math.sin(min(local / (.2 / speed), 1) * math.pi * 1.2)
+                squeeze_x = 1 + 0.15 * pop * intensity
+                squeeze_y = 1 - 0.1 * pop * intensity
+                extra_scale = (1 + 0.2 * pop * intensity)
+                extra_y = -int(15 * pop * intensity * max(0, 1 - (local * 3 * speed)))
+                glow_alpha_mult = 0.2 + 0.35 * pop * intensity
+                glow_color = (255, 180, 255)
+
+            elif style == "殘影拖曳":
+                active = max(0., 1 - abs(progress - .5) * 1.6)
+                ghost_trail = int(3 * active * intensity)
+                extra_x = int(active * 8 * intensity)
+                extra_y = -int(4 * active * intensity)
+                extra_scale = 1 + 0.12 * active * intensity
+                glow_alpha_mult = 0.25 + 0.3 * active * intensity
+                glow_color = (150, 100, 255)
+
+            elif style == "閃爍霓虹":
+                flicker = rng.random()
+                flicker_on = math.sin(local * 15 * speed + char_phase * 20) > -0.2
+                neon_bright = 1.0 if flicker_on else 0.25
+                extra_scale = 1 + 0.06 * neon_bright * intensity
+                glow_alpha_mult = 0.15 + 0.6 * neon_bright * intensity
+                hue_shift = (char_phase * 360) % 360
+                if hue_shift < 120:
+                    glow_color = (255, 80, 80)
+                elif hue_shift < 240:
+                    glow_color = (80, 255, 80)
+                else:
+                    glow_color = (80, 80, 255)
+                alpha = min(255, int(base_alpha * (0.5 + 0.5 * neon_bright)))
+                stroke_w = max(4, font.size // 13)
+
+            elif style == "粒子爆破":
+                scatter = max(0, 1 - local * 2.5 * speed)
+                gather = max(0, min(1, (local - .05 / speed) * 4 * speed))
+                if scatter > 0:
+                    extra_x = int((rng.random() - 0.5) * 40 * scatter * intensity)
+                    extra_y = int((rng.random() - 0.5) * 40 * scatter * intensity)
+                    extra_scale = 0.3 + 0.7 * gather
+                    alpha = int(base_alpha * gather)
+                else:
+                    extra_scale = 1 + 0.05 * math.sin(local * 10 * speed) * intensity
+                glow_alpha_mult = 0.2 + 0.3 * gather * intensity
+                glow_color = (255, 140, 50)
+
+            pop = 1 + extra_scale - 1
+            total_scale = pop * (1 + energy * .03 * intensity)
+            motion = height * (.070 if style == "滑入淡出" else .035)
+            top_y = base_top + int((1 - enter) * motion - (1 - leave) * height * .018) + int(subtitle_style.offset_y * height)
+            draw_y = top_y + line_no * line_h + extra_y
+
+            glyph = Image.new("RGBA", (int(char_w + 80), font.size + 100), (0, 0, 0, 0))
+            gd = ImageDraw.Draw(glyph)
+            gd.text((40, 30), char, font=font, fill=(*subtitle_style.text_color, alpha), stroke_width=stroke_w, stroke_fill=(*subtitle_style.outline_color, int(alpha * .9)))
+
+            glow = glyph.filter(ImageFilter.GaussianBlur(max(3, glow_radius)))
+            glow.putalpha(glow.getchannel("A").point(lambda value: int(value * min(1.0, glow_alpha_mult * intensity))))
+            glow_color_a = (*glow_color, alpha)
+
+            if ghost_trail > 0:
+                trail_layer = Image.new("RGBA", frame.size, (0, 0, 0, 0))
+                for ti in range(1, ghost_trail + 1):
+                    trail_offset = ti * 4 * intensity
+                    trail_alpha = int(alpha * 0.25 / ti)
+                    trail_glyph = Image.new("RGBA", (int(char_w + 80), font.size + 100), (0, 0, 0, 0))
+                    ImageDraw.Draw(trail_glyph).text((40, 30), char, font=font, fill=(150, 100, 255, trail_alpha), stroke_width=stroke_w, stroke_fill=(16, 12, 9, int(trail_alpha * 0.5)))
+                    trail_glyph = trail_glyph.filter(ImageFilter.GaussianBlur(max(2, font.size // 16)))
+                    tx = int(x - trail_offset + extra_x)
+                    ty = int(draw_y + 30)
+                    trail_layer.alpha_composite(trail_glyph, (tx, ty))
+                layer.alpha_composite(trail_layer)
+
+            glow_pos = (int(x - 40 + extra_x), int(draw_y + 10))
+            layer.alpha_composite(glow, glow_pos)
+
+            if total_scale != 1:
+                glyph = glyph.resize((int(glyph.width * total_scale), int(glyph.height * total_scale)), Image.Resampling.LANCZOS)
+                position = (int(x + char_w / 2 - glyph.width / 2 + extra_x), int(draw_y + font.size / 2 - glyph.height / 2))
+            else:
+                position = (int(x - 40 + extra_x), int(draw_y + 10))
+
+            layer.alpha_composite(glyph, position)
+            x += char_w; cursor += 1
+
     frame.alpha_composite(layer)
 
 
 def render_preview_frame(segments: Iterable[object], now: float, width: int, height: int, style: str, subtitle_style: SubtitleStyle | None = None) -> Image.Image:
-    """Render one transparent frame for the Tk preview; it never writes to disk."""
     image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     for item in segments:
         if item.start <= now < item.end:
@@ -140,7 +321,6 @@ def render_preview_frame(segments: Iterable[object], now: float, width: int, hei
 
 
 def render_sequence(segments: Iterable[object], audio_path: Path | None, duration: float, output: Path, width: int, height: int, fps: int, status: Progress, style: str = "逐字點亮", subtitle_style: SubtitleStyle | None = None) -> int:
-    """Render active lyric segments.  The caller owns threading and UI updates."""
     subtitle_style = subtitle_style or DEFAULT_STYLE
     items = sorted((item for item in segments if item.end > item.start), key=lambda item: item.start)
     if not items: raise RuntimeError("沒有可輸出的歌詞。")

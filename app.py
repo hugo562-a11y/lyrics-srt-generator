@@ -18,6 +18,7 @@ from tkinter import colorchooser, filedialog, messagebox, ttk
 from typing import Iterable
 
 from bootstrap import add_nvidia_dll_paths, ensure_optional_package, ensure_required_packages, gpu_runtime_ready, install_gpu_runtime
+from subtitle_png_renderer import ANIMATION_STYLES
 
 
 APP_TITLE = "歌詞 SRT 產生器"
@@ -31,7 +32,7 @@ PNG_ASPECTS = {
     "1:1（1080×1080）": (1080, 1080),
     "4:3（1440×1080）": (1440, 1080),
 }
-PNG_ANIMATION_STYLES = ("逐字點亮", "彈跳聚焦", "滑入淡出", "電影柔和")
+PNG_ANIMATION_STYLES = ANIMATION_STYLES
 
 # 深色介面色票，比照主流影音剪輯工具（Premiere／DaVinci）的暗色風格。
 DARK_BG = "#1e1f22"
@@ -601,6 +602,8 @@ class LyricsSrtApp(tk.Tk):
         self.subtitle_halign_var = tk.StringVar(value="置中")
         self.subtitle_offset_x_var = tk.DoubleVar(value=0.0)
         self.subtitle_offset_y_var = tk.DoubleVar(value=0.0)
+        self.anim_intensity_var = tk.DoubleVar(value=1.0)
+        self.anim_speed_var = tk.DoubleVar(value=1.0)
         self._build_ui()
         self._apply_dark_titlebar()
         self.bind_all("<Control-z>", self.undo)
@@ -721,24 +724,29 @@ class LyricsSrtApp(tk.Tk):
         body = ttk.Frame(self, padding=(14, 6))
         body.grid(row=3, column=0, sticky="nsew")
         body.columnconfigure(0, weight=1)
-        body.columnconfigure(2, weight=0)
         body.rowconfigure(0, weight=1)
+
+        body_pane = ttk.PanedWindow(body, orient="horizontal")
+        body_pane.grid(row=0, column=0, sticky="nsew")
+
+        tree_frame = ttk.Frame(body_pane)
         columns = ("start", "end", "kind", "text")
-        self.tree = ttk.Treeview(body, columns=columns, show="headings", selectmode="browse")
-        for key, title, width in (("start", "開始", 140), ("end", "結束", 140), ("kind", "類型", 90), ("text", "文字／標記", 580)):
+        self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", selectmode="browse")
+        for key, title, width in (("start", "開始", 140), ("end", "結束", 140), ("kind", "類型", 90), ("text", "文字／標記", 460)):
             self.tree.heading(key, text=title)
             self.tree.column(key, width=width, anchor="center" if key != "text" else "w", stretch=key == "text")
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        scroll = ttk.Scrollbar(body, orient="vertical", command=self.tree.yview)
-        scroll.grid(row=0, column=1, sticky="ns")
+        self.tree.pack(side="left", fill="both", expand=True)
+        scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
+        scroll.pack(side="right", fill="y")
         self.tree.configure(yscrollcommand=scroll.set)
         self.tree.bind("<ButtonRelease-1>", self.play_clicked_row)
         self.tree.bind("<Double-1>", self._begin_edit)
+        body_pane.add(tree_frame, weight=3)
 
-        preview_panel = ttk.LabelFrame(body, text="字幕預覽（跟隨主播放器）", padding=8)
-        preview_panel.grid(row=0, column=2, sticky="n", padx=(12, 0))
+        preview_panel = ttk.LabelFrame(body_pane, text="字幕預覽（跟隨主播放器）", padding=8)
         self.preview_image_label = tk.Label(preview_panel, background="#08090b", bd=1, relief="solid")
         self.preview_image_label.pack()
+        body_pane.add(preview_panel, weight=2)
 
         bottom = ttk.Frame(self, padding=(14, 6, 14, 14))
         bottom.grid(row=4, column=0, sticky="ew")
@@ -798,6 +806,15 @@ class LyricsSrtApp(tk.Tk):
         ttk.Scale(position_row, from_=-0.4, to=0.4, variable=self.subtitle_offset_x_var, length=110, command=lambda _v: self._refresh_preview()).pack(side="left", padx=(0, 12))
         ttk.Label(position_row, text="上下偏移").pack(side="left", padx=(0, 4))
         ttk.Scale(position_row, from_=-0.4, to=0.4, variable=self.subtitle_offset_y_var, length=110, command=lambda _v: self._refresh_preview()).pack(side="left")
+
+        anim_row = ttk.Frame(caption_export)
+        anim_row.pack(fill="x", pady=(6, 0))
+        ttk.Label(anim_row, text="動畫強度").pack(side="left", padx=(0, 4))
+        ttk.Scale(anim_row, from_=0.0, to=3.0, variable=self.anim_intensity_var, length=140, command=lambda _v: self._refresh_preview()).pack(side="left", padx=(0, 4))
+        ttk.Label(anim_row, textvariable=self.anim_intensity_var, width=4).pack(side="left", padx=(0, 16))
+        ttk.Label(anim_row, text="動畫速度").pack(side="left", padx=(0, 4))
+        ttk.Scale(anim_row, from_=0.2, to=3.0, variable=self.anim_speed_var, length=140, command=lambda _v: self._refresh_preview()).pack(side="left", padx=(0, 4))
+        ttk.Label(anim_row, textvariable=self.anim_speed_var, width=4).pack(side="left")
 
         action_row = ttk.Frame(caption_export)
         action_row.pack(fill="x", pady=(10, 0))
@@ -1388,6 +1405,8 @@ class LyricsSrtApp(tk.Tk):
             halign=halign_map.get(self.subtitle_halign_var.get(), "center"),
             offset_x=self.subtitle_offset_x_var.get(),
             offset_y=self.subtitle_offset_y_var.get(),
+            anim_intensity=self.anim_intensity_var.get(),
+            anim_speed=self.anim_speed_var.get(),
         )
 
     def _pick_text_color(self) -> None:
@@ -1406,7 +1425,7 @@ class LyricsSrtApp(tk.Tk):
 
     def _preview_dimensions(self) -> tuple[int, int]:
         width, height = PNG_ASPECTS[self.png_aspect_var.get()]
-        scale = min(300 / width, 220 / height)
+        scale = min(520 / width, 380 / height)
         return max(2, int(width * scale)), max(2, int(height * scale))
 
     def _refresh_preview(self, now: float | None = None) -> None:
