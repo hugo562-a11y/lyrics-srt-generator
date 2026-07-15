@@ -1,4 +1,4 @@
-"""本機歌詞辨識、音樂段標記與 SRT 匯出工具。"""
+"""本機歌詞辨識、音樂段標記與 SRT／動態透明字幕匯出工具。"""
 from __future__ import annotations
 
 import copy
@@ -14,7 +14,7 @@ import time
 import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import colorchooser, filedialog, messagebox, ttk
 from typing import Iterable
 
 from bootstrap import add_nvidia_dll_paths, ensure_optional_package, ensure_required_packages, gpu_runtime_ready, install_gpu_runtime
@@ -25,6 +25,40 @@ MUSIC_KIND = "音樂"
 LYRIC_KIND = "歌詞"
 SUPPORTED_AUDIO = [("音檔", "*.mp3 *.wav *.m4a *.flac *.aac *.ogg"), ("所有檔案", "*.*")]
 SUPPORTED_LYRICS = [("歌詞文字檔", "*.txt *.lrc"), ("所有檔案", "*.*")]
+PNG_ASPECTS = {
+    "16:9（1920×1080）": (1920, 1080),
+    "9:16（1080×1920）": (1080, 1920),
+    "1:1（1080×1080）": (1080, 1080),
+    "4:3（1440×1080）": (1440, 1080),
+}
+PNG_ANIMATION_STYLES = ("逐字點亮", "彈跳聚焦", "滑入淡出", "電影柔和")
+
+# 深色介面色票，比照主流影音剪輯工具（Premiere／DaVinci）的暗色風格。
+DARK_BG = "#1e1f22"
+DARK_PANEL = "#26282c"
+DARK_FIELD = "#303338"
+DARK_BORDER = "#3f4248"
+DARK_FG = "#e6e6e6"
+DARK_MUTED_FG = "#9aa0a6"
+DARK_ACCENT = "#4c8bf5"
+WAVE_CANVAS_BG = "#141518"
+WAVE_RULER_BG = "#202226"
+WAVE_RULER_TICK = "#3a3d42"
+WAVE_RULER_TEXT = "#aeb4bd"
+WAVE_EMPTY_LINE = "#43474e"
+WAVE_FILL = "#4f7fb8"
+WAVE_MID_LINE = "#345d8c"
+WAVE_LABEL_FG = "#f5f6f8"
+LYRIC_COLOR = "#5b9bd9"
+LYRIC_OUTLINE = "#3d6fa0"
+MUSIC_COLOR = "#3fa06a"
+MUSIC_OUTLINE = "#2c7a4f"
+DELETED_COLOR = "#6b6f76"
+DELETED_OUTLINE = "#55585e"
+SELECTED_OUTLINE = "#ff8a4c"
+START_HANDLE_COLOR = "#37d67a"
+END_HANDLE_COLOR = "#ff5c5c"
+PLAYHEAD_COLOR = "#ff4d4f"
 
 
 @dataclass
@@ -86,6 +120,23 @@ def probe_duration(path: Path) -> float:
         return float(output.strip())
     except (FileNotFoundError, subprocess.CalledProcessError, ValueError) as exc:
         raise RuntimeError("無法取得音檔長度。請安裝 FFmpeg，或使用 WAV/FLAC 音檔。") from exc
+
+
+def decode_waveform(path: Path, sample_rate: int = 4000) -> "np.ndarray":
+    """用 ffmpeg 解碼成單聲道 PCM，回傳 -1~1 浮點數陣列，供聲波顯示使用。"""
+    import numpy as np
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("找不到 FFmpeg 的 ffmpeg.exe，無法產生聲波顯示。請安裝 FFmpeg 並加入 PATH。")
+    result = subprocess.run(
+        [ffmpeg, "-v", "error", "-i", str(path), "-ac", "1", "-ar", str(sample_rate), "-f", "s16le", "-"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if result.returncode != 0 or not result.stdout:
+        message = result.stderr.decode("utf-8", "ignore").strip() or "未知錯誤"
+        raise RuntimeError(f"聲波解碼失敗：{message}")
+    return np.frombuffer(result.stdout, dtype="<i2").astype(np.float32) / 32768.0
 
 
 def normalize_lyrics(raw_segments: Iterable[object]) -> list[Segment]:
@@ -227,12 +278,303 @@ def _fix_overlapping_segments(segments: list[Segment]) -> list[Segment]:
     return segments
 
 
+class WaveformView(ttk.Frame):
+    """聲波、時間軸與逐句範圍；可直接拖曳句子的起訖點來校正時間。"""
+
+    RULER_H = 18
+    WAVE_H = 96
+    MIN_PPS = 8.0
+    MAX_PPS = 400.0
+    EDGE_GRAB_PX = 6
+
+    def __init__(self, master: tk.Widget, *, on_seek, on_select, on_edit) -> None:
+        super().__init__(master)
+        self.on_seek = on_seek
+        self.on_select = on_select
+        self.on_edit = on_edit
+        self.duration = 0.0
+        self.samples = None  # np.ndarray | None，讀取聲波前先顯示空白時間軸
+        self.segments: list[Segment] = []
+        self.selected_index: int | None = None
+        self.pixels_per_second = 40.0
+        self.playhead = 0.0
+        self._drag: dict | None = None
+
+        toolbar = ttk.Frame(self)
+        toolbar.pack(fill="x")
+        ttk.Label(toolbar, text="拖曳邊界調整起訖時間；點聲波句子播放；點時間尺跳轉；滾輪縮放；按住中鍵拖曳平移", foreground=DARK_MUTED_FG).pack(side="left")
+        ttk.Button(toolbar, text="－", width=3, command=lambda: self.zoom(1 / 1.5)).pack(side="right")
+        ttk.Button(toolbar, text="符合視窗", command=self.fit_to_window).pack(side="right", padx=4)
+        ttk.Button(toolbar, text="＋", width=3, command=lambda: self.zoom(1.5)).pack(side="right")
+
+        canvas_area = ttk.Frame(self)
+        canvas_area.pack(fill="both", expand=True)
+        canvas_area.columnconfigure(0, weight=1)
+        canvas_area.rowconfigure(0, weight=1)
+        self.canvas = tk.Canvas(canvas_area, height=self.RULER_H + self.WAVE_H, background=WAVE_CANVAS_BG, highlightthickness=0)
+        self.canvas.grid(row=0, column=0, sticky="ew")
+        hscroll = ttk.Scrollbar(canvas_area, orient="horizontal", command=self.canvas.xview)
+        hscroll.grid(row=1, column=0, sticky="ew")
+        self.canvas.configure(xscrollcommand=hscroll.set)
+
+        self.canvas.bind("<Configure>", lambda _e: self._redraw())
+        self.canvas.bind("<Button-1>", self._on_press)
+        self.canvas.bind("<B1-Motion>", self._on_drag)
+        self.canvas.bind("<ButtonRelease-1>", self._on_release)
+        self.canvas.bind("<MouseWheel>", self._on_wheel)
+        self.canvas.bind("<ButtonPress-2>", self._on_pan_start)
+        self.canvas.bind("<B2-Motion>", self._on_pan_move)
+
+    def set_audio(self, duration: float, samples=None) -> None:
+        self.duration = max(0.0, duration)
+        if samples is not None:
+            self.samples = samples
+        else:
+            self.samples = None
+        self.after(80, self.fit_to_window)
+
+    def set_segments(self, segments: list[Segment], selected_index: int | None) -> None:
+        self.segments = segments
+        self.selected_index = selected_index
+        self._redraw()
+
+    def set_selected(self, index: int | None) -> None:
+        self.selected_index = index
+        self._redraw()
+
+    def zoom(self, factor: float) -> None:
+        if self.duration <= 0:
+            return
+        center_time = self._x_to_time(self.canvas.canvasx(self.canvas.winfo_width() / 2))
+        self.pixels_per_second = min(self.MAX_PPS, max(self.MIN_PPS, self.pixels_per_second * factor))
+        self._redraw()
+        self.reveal_time(center_time, center=True)
+
+    def _zoom_at(self, screen_x: float, factor: float) -> None:
+        """以滑鼠所在時間點為中心縮放，縮放後同一時間點仍停留在游標下方。"""
+        if self.duration <= 0:
+            return
+        anchor_time = self._x_to_time(self.canvas.canvasx(screen_x))
+        self.pixels_per_second = min(self.MAX_PPS, max(self.MIN_PPS, self.pixels_per_second * factor))
+        self._redraw()
+        width = self._canvas_width()
+        if width <= 0:
+            return
+        target = max(0.0, self._time_to_x(anchor_time) - screen_x)
+        self.canvas.xview_moveto(min(1.0, target / width))
+
+    def fit_to_window(self) -> None:
+        width = self.canvas.winfo_width() or 900
+        if self.duration > 0:
+            self.pixels_per_second = max(self.MIN_PPS, min(self.MAX_PPS, width / self.duration))
+        self._redraw()
+
+    def set_playhead(self, t: float, follow: bool = False) -> None:
+        self.playhead = max(0.0, min(self.duration, t))
+        x = self._time_to_x(self.playhead)
+        total_h = self.RULER_H + self.WAVE_H
+        if self.canvas.find_withtag("playhead"):
+            self.canvas.coords("playhead", x, 0, x, total_h)
+        else:
+            self.canvas.create_line(x, 0, x, total_h, fill=PLAYHEAD_COLOR, width=2, tags=("playhead",))
+        if follow:
+            self.reveal_time(self.playhead)
+
+    def reveal_time(self, t: float, center: bool = False) -> None:
+        width = self._canvas_width()
+        view_w = self.canvas.winfo_width()
+        if width <= 0 or view_w <= 0:
+            return
+        x = self._time_to_x(t)
+        if center:
+            self.canvas.xview_moveto(max(0.0, x - view_w / 2) / width)
+            return
+        left = self.canvas.canvasx(0)
+        right = left + view_w
+        if x < left + 20 or x > right - 20:
+            self.canvas.xview_moveto(max(0.0, x - view_w / 2) / width)
+
+    def _canvas_width(self) -> int:
+        return max(1, int(self.duration * self.pixels_per_second))
+
+    def _time_to_x(self, t: float) -> float:
+        return t * self.pixels_per_second
+
+    def _x_to_time(self, x: float) -> float:
+        if not self.pixels_per_second:
+            return 0.0
+        return max(0.0, min(self.duration, x / self.pixels_per_second))
+
+    def _nice_interval(self) -> float:
+        target_px = 90
+        raw = target_px / max(self.pixels_per_second, 0.01)
+        for step in (0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600):
+            if step >= raw:
+                return step
+        return 600.0
+
+    def _redraw(self) -> None:
+        self.canvas.delete("all")
+        width = self._canvas_width()
+        height = self.RULER_H + self.WAVE_H
+        self.canvas.configure(scrollregion=(0, 0, width, height))
+        self._draw_ruler(width, height)
+        self._draw_waveform(width)
+        self._draw_segments()
+        self.canvas.create_line(self._time_to_x(self.playhead), 0, self._time_to_x(self.playhead), height, fill=PLAYHEAD_COLOR, width=2, tags=("playhead",))
+
+    def _draw_ruler(self, width: int, height: int) -> None:
+        self.canvas.create_rectangle(0, 0, width, self.RULER_H, fill=WAVE_RULER_BG, width=0)
+        interval = self._nice_interval()
+        steps = int(self.duration / interval) + 2 if interval else 0
+        for i in range(steps):
+            t = i * interval
+            x = self._time_to_x(t)
+            self.canvas.create_line(x, 0, x, height, fill=WAVE_RULER_TICK)
+            self.canvas.create_text(x + 3, self.RULER_H / 2, text=format_timecode(t)[:8], anchor="w", font=("Consolas", 8), fill=WAVE_RULER_TEXT)
+
+    def _draw_waveform(self, width: int) -> None:
+        top = self.RULER_H
+        mid = top + self.WAVE_H / 2
+        half = self.WAVE_H / 2 - 4
+        columns = max(1, min(width, 4000))
+        if self.samples is None or len(self.samples) == 0 or width <= 0:
+            self.canvas.create_line(0, mid, width, mid, fill=WAVE_EMPTY_LINE)
+            return
+        import numpy as np
+        bucket = max(1, len(self.samples) // columns)
+        usable = (len(self.samples) // bucket) * bucket
+        if usable == 0:
+            self.canvas.create_line(0, mid, width, mid, fill=WAVE_EMPTY_LINE)
+            return
+        peaks = np.abs(self.samples[:usable].reshape(-1, bucket)).max(axis=1)
+        xs = np.linspace(0, width, num=len(peaks), endpoint=False)
+        top_points = [(float(x), mid - float(p) * half) for x, p in zip(xs, peaks)]
+        bottom_points = [(float(x), mid + float(p) * half) for x, p in zip(xs, peaks)]
+        polygon: list[float] = []
+        for x, y in top_points:
+            polygon.extend((x, y))
+        for x, y in reversed(bottom_points):
+            polygon.extend((x, y))
+        self.canvas.create_polygon(*polygon, fill=WAVE_FILL, outline="", width=0)
+        self.canvas.create_line(0, mid, width, mid, fill=WAVE_MID_LINE)
+
+    GAP_PX = 2
+
+    def _draw_segments(self) -> None:
+        top = self.RULER_H
+        bottom = top + self.WAVE_H
+        for index, segment in enumerate(self.segments):
+            x0 = self._time_to_x(segment.start)
+            x1 = self._time_to_x(segment.end)
+            if segment.deleted:
+                fill, outline = DELETED_COLOR, DELETED_OUTLINE
+            elif segment.kind == MUSIC_KIND:
+                fill, outline = MUSIC_COLOR, MUSIC_OUTLINE
+            else:
+                fill, outline = LYRIC_COLOR, LYRIC_OUTLINE
+            width_px = 2 if index == self.selected_index else 1
+            outline_color = SELECTED_OUTLINE if index == self.selected_index else outline
+            # 兩句緊鄰時保留一點視覺間隙，避免色塊黏在一起、難以分辨與拖曳。
+            mid = (x0 + x1) / 2
+            fill_left = min(x0 + self.GAP_PX, mid)
+            fill_right = max(x1 - self.GAP_PX, mid)
+            self.canvas.create_rectangle(fill_left, top, fill_right, bottom, fill=fill, stipple="gray50", outline=outline_color, width=width_px, tags=("segment", f"seg:{index}"))
+            label = segment.text if len(segment.text) <= 40 else segment.text[:39] + "…"
+            self.canvas.create_text(fill_left + 4, top + 4, text=label, anchor="nw", font=("Microsoft JhengHei UI", 8), fill=WAVE_LABEL_FG, tags=("segment_label",))
+            self.canvas.create_line(x0, top, x0, bottom, fill=START_HANDLE_COLOR, width=2, tags=("handle", f"handle:{index}:start"))
+            self.canvas.create_line(x1, top, x1, bottom, fill=END_HANDLE_COLOR, width=2, tags=("handle", f"handle:{index}:end"))
+
+    def _find_handle(self, x: float, y: float) -> tuple[int, str] | None:
+        best = None
+        best_dist = self.EDGE_GRAB_PX
+        for item in self.canvas.find_withtag("handle"):
+            coords = self.canvas.coords(item)
+            if not coords:
+                continue
+            dist = abs(coords[0] - x)
+            if dist <= best_dist:
+                best_dist = dist
+                tag = next((t for t in self.canvas.gettags(item) if t.startswith("handle:")), None)
+                if tag:
+                    _, idx_str, edge = tag.split(":")
+                    best = (int(idx_str), edge)
+        return best
+
+    def _find_segment(self, x: float, y: float) -> int | None:
+        for item in self.canvas.find_withtag("segment"):
+            x0, y0, x1, y1 = self.canvas.coords(item)
+            if x0 <= x <= x1 and y0 <= y <= y1:
+                tag = next((t for t in self.canvas.gettags(item) if t.startswith("seg:")), None)
+                if tag:
+                    return int(tag.split(":")[1])
+        return None
+
+    def _on_press(self, event: tk.Event) -> None:
+        x = self.canvas.canvasx(event.x)
+        y = event.y
+        self._drag = None
+        if y <= self.RULER_H:
+            self.on_seek(self._x_to_time(x))
+            return
+        handle = self._find_handle(x, y)
+        if handle is not None:
+            self._drag = {"index": handle[0], "edge": handle[1]}
+            return
+        index = self._find_segment(x, y)
+        if index is not None:
+            self.on_select(index)
+        else:
+            self.on_seek(self._x_to_time(x))
+
+    def _on_drag(self, event: tk.Event) -> None:
+        if not self._drag:
+            return
+        x = self.canvas.canvasx(event.x)
+        t = self._x_to_time(x)
+        index, edge = self._drag["index"], self._drag["edge"]
+        if not (0 <= index < len(self.segments)):
+            self._drag = None
+            return
+        segment = self.segments[index]
+        if edge == "start":
+            t = min(t, segment.end - 0.02)
+        else:
+            t = max(t, segment.start + 0.02)
+        t = max(0.0, min(self.duration, t))
+        self._drag["preview"] = t
+        x = self._time_to_x(t)
+        top, bottom = self.RULER_H, self.RULER_H + self.WAVE_H
+        self.canvas.coords(f"handle:{index}:{edge}", x, top, x, bottom)
+        rect = next(iter(self.canvas.find_withtag(f"seg:{index}")), None)
+        if rect:
+            x0, y0, x1, y1 = self.canvas.coords(rect)
+            if edge == "start":
+                self.canvas.coords(rect, x, y0, x1, y1)
+            else:
+                self.canvas.coords(rect, x0, y0, x, y1)
+
+    def _on_release(self, _event: tk.Event) -> None:
+        if self._drag and "preview" in self._drag:
+            self.on_edit(self._drag["index"], self._drag["edge"], self._drag["preview"])
+        self._drag = None
+
+    def _on_wheel(self, event: tk.Event) -> None:
+        self._zoom_at(event.x, 1.15 if event.delta > 0 else 1 / 1.15)
+
+    def _on_pan_start(self, event: tk.Event) -> None:
+        self.canvas.scan_mark(event.x, event.y)
+
+    def _on_pan_move(self, event: tk.Event) -> None:
+        self.canvas.scan_dragto(event.x, event.y, gain=1)
+
+
 class LyricsSrtApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title(APP_TITLE)
-        self.geometry("1080x700")
-        self.minsize(860, 540)
+        self.geometry("1360x960")
+        self.minsize(1150, 760)
         self.audio_path: Path | None = None
         self.duration = 0.0
         self.reference_lyrics: list[str] = []
@@ -250,19 +592,77 @@ class LyricsSrtApp(tk.Tk):
         self.play_stop_at: float | None = None
         self._ffplay: str | None = None
         self._audio_process: subprocess.Popen[str] | None = None
+        self.preview_image_label: tk.Label | None = None
+        self.preview_photo: object | None = None
+        self.subtitle_font_size_var = tk.IntVar(value=64)
+        self.subtitle_text_color = "#f6f7f4"
+        self.subtitle_outline_color = "#100c09"
+        self.subtitle_valign_var = tk.StringVar(value="下方")
+        self.subtitle_halign_var = tk.StringVar(value="置中")
+        self.subtitle_offset_x_var = tk.DoubleVar(value=0.0)
+        self.subtitle_offset_y_var = tk.DoubleVar(value=0.0)
         self._build_ui()
+        self._apply_dark_titlebar()
         self.bind_all("<Control-z>", self.undo)
         self.bind_all("<Control-y>", self.redo)
+        # 空白鍵＝播放／暫停；取代按鈕與勾選框原本「space＝按下」的預設行為，
+        # 但不可回傳 "break"，否則會連 bindtags 後面的 all（全域）都一併擋掉，
+        # 導致焦點停在任何按鈕上時（點擊按鈕後 ttk 會自動把焦點留在該按鈕）空白鍵完全沒反應。
+        self.bind_class("TButton", "<space>", lambda _e: None)
+        self.bind_class("TCheckbutton", "<space>", lambda _e: None)
+        self.bind_all("<space>", self._on_space_key)
         self.after(120, self._poll_events)
         self.after(250, self._check_dependencies_async)
         self.after(75, self._update_playback)
 
+    def _apply_dark_titlebar(self) -> None:
+        """Windows 10/11 可讓標題列也套用深色；不支援的系統會靜默略過。"""
+        try:
+            import ctypes
+            self.update_idletasks()
+            hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+            value = ctypes.c_int(1)
+            for attribute in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE：新舊 Windows 版本編號不同
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attribute, ctypes.byref(value), ctypes.sizeof(value))
+        except Exception:
+            pass
+
     def _build_ui(self) -> None:
         style = ttk.Style(self)
-        style.configure("Treeview", rowheight=28, font=("Microsoft JhengHei UI", 10))
-        style.configure("Treeview.Heading", font=("Microsoft JhengHei UI", 10, "bold"))
+        # "clam" 是唯一能讓 ttk 元件完全套用自訂顏色的內建主題；
+        # 預設的 "vista" 主題會畫原生 Windows 控件，大多顏色設定會被忽略。
+        style.theme_use("clam")
+        self.configure(background=DARK_BG)
+        style.configure(".", background=DARK_BG, foreground=DARK_FG, fieldbackground=DARK_FIELD,
+                         bordercolor=DARK_BORDER, darkcolor=DARK_BG, lightcolor=DARK_BG,
+                         troughcolor=DARK_FIELD, insertcolor=DARK_FG, font=("Microsoft JhengHei UI", 10))
+        style.configure("TFrame", background=DARK_BG)
+        style.configure("TLabelframe", background=DARK_BG, foreground=DARK_FG, bordercolor=DARK_BORDER)
+        style.configure("TLabelframe.Label", background=DARK_BG, foreground=DARK_FG)
+        style.configure("TLabel", background=DARK_BG, foreground=DARK_FG)
+        style.configure("TButton", background=DARK_PANEL, foreground=DARK_FG, bordercolor=DARK_BORDER, focuscolor=DARK_ACCENT, padding=4)
+        style.map("TButton", background=[("active", "#35383e"), ("pressed", "#2a2c30")], foreground=[("disabled", DARK_MUTED_FG)])
+        style.configure("TCheckbutton", background=DARK_BG, foreground=DARK_FG)
+        style.map("TCheckbutton", background=[("active", DARK_BG)])
+        style.configure("TEntry", fieldbackground=DARK_FIELD, foreground=DARK_FG, insertcolor=DARK_FG, bordercolor=DARK_BORDER)
+        style.configure("TCombobox", fieldbackground=DARK_FIELD, foreground=DARK_FG, background=DARK_FIELD, arrowcolor=DARK_FG, bordercolor=DARK_BORDER)
+        style.map("TCombobox", fieldbackground=[("readonly", DARK_FIELD)], foreground=[("readonly", DARK_FG)])
+        style.configure("Vertical.TScrollbar", background=DARK_PANEL, troughcolor=DARK_BG, bordercolor=DARK_BORDER, arrowcolor=DARK_FG)
+        style.configure("Horizontal.TScrollbar", background=DARK_PANEL, troughcolor=DARK_BG, bordercolor=DARK_BORDER, arrowcolor=DARK_FG)
+        style.configure("Horizontal.TScale", background=DARK_BG, troughcolor=DARK_FIELD)
+        style.configure("TProgressbar", background=DARK_ACCENT, troughcolor=DARK_FIELD, bordercolor=DARK_BORDER)
+        style.configure("Treeview", background=DARK_FIELD, fieldbackground=DARK_FIELD, foreground=DARK_FG,
+                         rowheight=28, font=("Microsoft JhengHei UI", 10), bordercolor=DARK_BORDER)
+        style.configure("Treeview.Heading", background=DARK_PANEL, foreground=DARK_FG, font=("Microsoft JhengHei UI", 10, "bold"))
+        style.map("Treeview.Heading", background=[("active", "#35383e")])
+        style.map("Treeview", background=[("selected", DARK_ACCENT)], foreground=[("selected", "#ffffff")])
+        # ttk Combobox 的下拉清單是原生 tk Listbox，要另外用 option_add 上色。
+        self.option_add("*TCombobox*Listbox.background", DARK_FIELD)
+        self.option_add("*TCombobox*Listbox.foreground", DARK_FG)
+        self.option_add("*TCombobox*Listbox.selectBackground", DARK_ACCENT)
+        self.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(2, weight=1)
+        self.rowconfigure(3, weight=1)
 
         top = ttk.Frame(self, padding=(14, 12, 14, 6))
         top.grid(row=0, column=0, sticky="ew")
@@ -274,7 +674,7 @@ class LyricsSrtApp(tk.Tk):
         ttk.Label(top, textvariable=self.duration_var).grid(row=0, column=2, padx=(10, 0))
         ttk.Button(top, text="匯入歌詞檔", command=self.import_lyrics).grid(row=0, column=3, padx=(16, 8))
         self.lyrics_file_var = tk.StringVar(value="未使用參考歌詞")
-        ttk.Label(top, textvariable=self.lyrics_file_var, foreground="#346b39").grid(row=0, column=4, sticky="w")
+        ttk.Label(top, textvariable=self.lyrics_file_var, foreground=MUSIC_COLOR).grid(row=0, column=4, sticky="w")
 
         controls = ttk.LabelFrame(self, text="本機 AI 分析", padding=10)
         controls.grid(row=1, column=0, sticky="ew", padx=14, pady=6)
@@ -309,13 +709,19 @@ class LyricsSrtApp(tk.Tk):
         status_row = ttk.Frame(controls)
         status_row.grid(row=3, column=0, columnspan=10, sticky="ew", pady=(8, 0))
         status_row.columnconfigure(0, weight=1)
-        ttk.Label(status_row, textvariable=self.progress_var, foreground="#245a9c").grid(row=0, column=0, sticky="w")
+        ttk.Label(status_row, textvariable=self.progress_var, foreground=DARK_ACCENT).grid(row=0, column=0, sticky="w")
         self.progress_bar = ttk.Progressbar(status_row, mode="indeterminate", length=220)
         self.progress_bar.grid(row=0, column=1, sticky="e", padx=(12, 0))
 
+        wave_frame = ttk.LabelFrame(self, text="聲波與時間軸", padding=(8, 4))
+        wave_frame.grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 6))
+        self.waveform = WaveformView(wave_frame, on_seek=self._waveform_seek, on_select=self._activate_segment, on_edit=self._waveform_edit)
+        self.waveform.pack(fill="both", expand=True)
+
         body = ttk.Frame(self, padding=(14, 6))
-        body.grid(row=2, column=0, sticky="nsew")
+        body.grid(row=3, column=0, sticky="nsew")
         body.columnconfigure(0, weight=1)
+        body.columnconfigure(2, weight=0)
         body.rowconfigure(0, weight=1)
         columns = ("start", "end", "kind", "text")
         self.tree = ttk.Treeview(body, columns=columns, show="headings", selectmode="browse")
@@ -329,8 +735,13 @@ class LyricsSrtApp(tk.Tk):
         self.tree.bind("<ButtonRelease-1>", self.play_clicked_row)
         self.tree.bind("<Double-1>", self._begin_edit)
 
+        preview_panel = ttk.LabelFrame(body, text="字幕預覽（跟隨主播放器）", padding=8)
+        preview_panel.grid(row=0, column=2, sticky="n", padx=(12, 0))
+        self.preview_image_label = tk.Label(preview_panel, background="#08090b", bd=1, relief="solid")
+        self.preview_image_label.pack()
+
         bottom = ttk.Frame(self, padding=(14, 6, 14, 14))
-        bottom.grid(row=3, column=0, sticky="ew")
+        bottom.grid(row=4, column=0, sticky="ew")
         self.play_btn = ttk.Button(bottom, text="▶ 播放", command=self.toggle_playback)
         self.play_btn.pack(side="left")
         ttk.Button(bottom, text="■ 停止", command=self.stop_playback).pack(side="left", padx=(6, 14))
@@ -342,10 +753,59 @@ class LyricsSrtApp(tk.Tk):
         ttk.Button(bottom, text="▶ 只播選取句", command=lambda: self.play_selected_segment(only_segment=True)).pack(side="left", padx=(0, 14))
         ttk.Button(bottom, text="＋ 新增列", command=self.add_segment).pack(side="left")
         ttk.Button(bottom, text="刪除／還原", command=self.toggle_deleted).pack(side="left", padx=6)
+        ttk.Button(bottom, text="✂ 在此斷句", command=self.split_at_playhead).pack(side="left", padx=(6, 0))
         ttk.Button(bottom, text="復原", command=self.undo).pack(side="left", padx=(18, 0))
         ttk.Button(bottom, text="重做", command=self.redo).pack(side="left", padx=6)
-        ttk.Label(bottom, text="雙擊欄位可修改；時間格式：00:00:00:00", foreground="#555").pack(side="left", padx=18)
-        ttk.Button(bottom, text="匯出 SRT", command=self.export_srt).pack(side="right")
+        ttk.Label(bottom, text="雙擊欄位可修改；時間格式：00:00:00:00", foreground=DARK_MUTED_FG).pack(side="left", padx=18)
+
+        caption_export = ttk.LabelFrame(self, text="字幕樣式與匯出", padding=(10, 8))
+        caption_export.grid(row=5, column=0, sticky="ew", padx=14, pady=(0, 12))
+        style_row = ttk.Frame(caption_export)
+        style_row.pack(fill="x")
+        self.png_aspect_var = tk.StringVar(value="16:9（1920×1080）")
+        ttk.Label(style_row, text="比例").pack(side="left", padx=(0, 4))
+        aspect_combo = ttk.Combobox(style_row, textvariable=self.png_aspect_var, state="readonly", width=16, values=tuple(PNG_ASPECTS))
+        aspect_combo.pack(side="left", padx=(0, 12))
+        aspect_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_preview())
+        self.png_animation_var = tk.StringVar(value="逐字點亮")
+        ttk.Label(style_row, text="動畫").pack(side="left", padx=(0, 4))
+        animation_combo = ttk.Combobox(style_row, textvariable=self.png_animation_var, state="readonly", width=10, values=PNG_ANIMATION_STYLES)
+        animation_combo.pack(side="left", padx=(0, 12))
+        animation_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_preview())
+        ttk.Label(style_row, text="字級").pack(side="left", padx=(0, 4))
+        size_spin = ttk.Spinbox(style_row, from_=24, to=160, increment=2, textvariable=self.subtitle_font_size_var, width=5, command=self._refresh_preview)
+        size_spin.pack(side="left", padx=(0, 12))
+        size_spin.bind("<KeyRelease>", lambda _event: self._refresh_preview())
+        self.text_color_btn = tk.Button(style_row, text="文字顏色", width=8, command=self._pick_text_color,
+                                         background=self.subtitle_text_color, activebackground=self.subtitle_text_color)
+        self.text_color_btn.pack(side="left", padx=(0, 8))
+        self.outline_color_btn = tk.Button(style_row, text="外框顏色", width=8, command=self._pick_outline_color,
+                                            background=self.subtitle_outline_color, activebackground=self.subtitle_outline_color,
+                                            foreground="#ffffff", activeforeground="#ffffff")
+        self.outline_color_btn.pack(side="left")
+
+        position_row = ttk.Frame(caption_export)
+        position_row.pack(fill="x", pady=(8, 0))
+        ttk.Label(position_row, text="垂直位置").pack(side="left", padx=(0, 4))
+        valign_combo = ttk.Combobox(position_row, textvariable=self.subtitle_valign_var, state="readonly", width=6, values=("上方", "中間", "下方"))
+        valign_combo.pack(side="left", padx=(0, 12))
+        valign_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_preview())
+        ttk.Label(position_row, text="水平位置").pack(side="left", padx=(0, 4))
+        halign_combo = ttk.Combobox(position_row, textvariable=self.subtitle_halign_var, state="readonly", width=6, values=("靠左", "置中", "靠右"))
+        halign_combo.pack(side="left", padx=(0, 12))
+        halign_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_preview())
+        ttk.Label(position_row, text="左右偏移").pack(side="left", padx=(0, 4))
+        ttk.Scale(position_row, from_=-0.4, to=0.4, variable=self.subtitle_offset_x_var, length=110, command=lambda _v: self._refresh_preview()).pack(side="left", padx=(0, 12))
+        ttk.Label(position_row, text="上下偏移").pack(side="left", padx=(0, 4))
+        ttk.Scale(position_row, from_=-0.4, to=0.4, variable=self.subtitle_offset_y_var, length=110, command=lambda _v: self._refresh_preview()).pack(side="left")
+
+        action_row = ttk.Frame(caption_export)
+        action_row.pack(fill="x", pady=(10, 0))
+        self.karaoke_btn = ttk.Button(action_row, text="匯出人聲／伴奏（卡拉OK）", command=self.export_karaoke_stems)
+        self.karaoke_btn.pack(side="left")
+        self.png_export_btn = ttk.Button(action_row, text="匯出動態 PNG（透明）", command=self.export_dynamic_png)
+        self.png_export_btn.pack(side="right", padx=(8, 0))
+        ttk.Button(action_row, text="匯出 SRT", command=self.export_srt).pack(side="right")
 
     def _check_dependencies_async(self) -> None:
         self._set_progress_status("正在確認必要套件（已安裝時不會下載）…", busy=True)
@@ -390,6 +850,22 @@ class LyricsSrtApp(tk.Tk):
         self.duration_var.set(f"長度：{format_timecode(self.duration)}")
         self._set_progress_status("已匯入，請選擇模型後開始分析。", busy=False)
         self.refresh_tree()
+        self.waveform.set_audio(self.duration, None)
+        self._load_waveform_async()
+
+    def _load_waveform_async(self) -> None:
+        path = self.audio_path
+        if not path:
+            return
+        threading.Thread(target=self._decode_waveform, args=(path,), daemon=True).start()
+
+    def _decode_waveform(self, path: Path) -> None:
+        try:
+            self._ensure_dependencies()
+            samples = decode_waveform(path)
+            self.events.put(("waveform", (path, samples)))
+        except Exception as exc:
+            self.events.put(("waveform_error", str(exc)))
 
     def _load_audio_backend(self) -> None:
         ffplay = shutil.which("ffplay")
@@ -397,6 +873,13 @@ class LyricsSrtApp(tk.Tk):
             self.events.put(("audio_ready", ffplay))
         else:
             self.events.put(("audio_error", "找不到 FFmpeg 的 ffplay.exe。請安裝 FFmpeg 並加入 PATH 後重新啟動程式。"))
+
+    def _on_space_key(self, event: tk.Event) -> str | None:
+        widget = event.widget
+        if isinstance(widget, (tk.Entry, ttk.Entry, ttk.Combobox)):
+            return None
+        self.toggle_playback()
+        return "break"
 
     def toggle_playback(self) -> None:
         if not self.audio_path:
@@ -454,19 +937,60 @@ class LyricsSrtApp(tk.Tk):
             self.play_time_var.set(format_timecode(self.playback_offset))
         if hasattr(self, "play_btn"):
             self.play_btn.configure(text="▶ 播放")
+        if hasattr(self, "waveform"):
+            self.waveform.set_playhead(self.playback_offset)
         if hasattr(self, "tree"):
             self.refresh_tree()
 
     def seek_playback(self, _event: tk.Event) -> None:
         self.playback_offset = float(self.play_slider.get())
+        self.waveform.set_playhead(self.playback_offset)
         if self.playing:
             self._start_playback(self.playback_offset)
+
+    def _waveform_seek(self, t: float) -> None:
+        self.playback_offset = t
+        self.play_slider.set(t)
+        self.play_time_var.set(format_timecode(t))
+        self.waveform.set_playhead(t)
+        if self.playing:
+            self._start_playback(t)
+
+    def _waveform_edit(self, index: int, edge: str, value: float) -> None:
+        if not (0 <= index < len(self.segments)):
+            return
+        self.push_undo("拖曳調整時間")
+        segment = self.segments[index]
+        if edge == "start":
+            segment.start = max(0.0, value)
+        else:
+            segment.end = min(self.duration, value)
+        if segment.end <= segment.start:
+            self.undo_stack.pop()
+            return
+        self.refresh_tree()
 
     def play_clicked_row(self, event: tk.Event) -> None:
         row = self.tree.identify_row(event.y)
         if row:
-            self.tree.selection_set(row)
-            self.play_selected_segment(only_segment=False)
+            self._activate_segment(int(row))
+
+    def _activate_segment(self, index: int) -> None:
+        """選取該句並移動播放頭；只有原本就在播放時才接續播放，不會自己開始播放。"""
+        if not (0 <= index < len(self.segments)):
+            return
+        self.tree.selection_set(str(index))
+        self.tree.see(str(index))
+        segment = self.segments[index]
+        self.playback_offset = segment.start
+        self.play_slider.set(segment.start)
+        self.play_time_var.set(format_timecode(segment.start))
+        self.playing_row = index
+        self.refresh_tree()
+        self.waveform.set_selected(index)
+        self.waveform.set_playhead(segment.start)
+        if self.playing:
+            self._start_playback(segment.start)
 
     def play_selected_segment(self, only_segment: bool = False) -> None:
         row = self.tree.selection()
@@ -479,6 +1003,8 @@ class LyricsSrtApp(tk.Tk):
         self.playback_offset = segment.start
         self.playing_row = int(row[0])
         self.refresh_tree()
+        self.waveform.set_selected(int(row[0]))
+        self.waveform.set_playhead(segment.start, follow=True)
         if self._ffplay is None:
             self.toggle_playback()
         else:
@@ -492,6 +1018,8 @@ class LyricsSrtApp(tk.Tk):
             else:
                 self.play_slider.set(current)
                 self.play_time_var.set(format_timecode(current))
+                self.waveform.set_playhead(current, follow=True)
+                self._refresh_preview(current)
                 active = next((i for i, item in enumerate(self.segments) if not item.deleted and item.start <= current <= item.end), None)
                 if active != self.playing_row:
                     self.playing_row = active
@@ -500,6 +1028,8 @@ class LyricsSrtApp(tk.Tk):
                         self.tree.selection_set(str(active))
                         self.tree.focus(str(active))
                         self.tree.see(str(active))
+        else:
+            self._refresh_preview()
         self.after(75, self._update_playback)
 
     def import_lyrics(self) -> None:
@@ -676,6 +1206,29 @@ class LyricsSrtApp(tk.Tk):
                     self.analyze_btn.configure(state="normal")
                     self._set_progress_status("分析失敗", busy=False)
                     messagebox.showerror(APP_TITLE, f"AI 分析失敗：\n{payload}")
+                elif event == "waveform":
+                    src_path, samples = payload
+                    if self.audio_path == src_path:
+                        self.waveform.set_audio(self.duration, samples)
+                elif event == "waveform_error":
+                    self._set_progress_status(f"聲波顯示無法產生（不影響其他功能）：{payload}", busy=False)
+                elif event == "png_done":
+                    output, frames = payload
+                    self.png_export_btn.configure(state="normal")
+                    self._set_progress_status(f"已輸出 {frames:,} 張透明 PNG：{output}", busy=False)
+                    messagebox.showinfo(APP_TITLE, f"動態字幕 PNG 序列已完成。\n\n{output}\n\n規格：透明 RGBA、30 fps、可直接以影像序列匯入剪輯軟體。")
+                elif event == "png_error":
+                    self.png_export_btn.configure(state="normal")
+                    self._set_progress_status("動態 PNG 匯出失敗", busy=False)
+                    messagebox.showerror(APP_TITLE, f"無法輸出動態字幕 PNG：\n{payload}")
+                elif event == "karaoke_done":
+                    self.karaoke_btn.configure(state="normal")
+                    self._set_progress_status(f"已輸出人聲／伴奏：{payload}", busy=False)
+                    messagebox.showinfo(APP_TITLE, f"卡拉OK人聲／伴奏分軌已完成。\n\n{payload}")
+                elif event == "karaoke_error":
+                    self.karaoke_btn.configure(state="normal")
+                    self._set_progress_status("人聲／伴奏分軌失敗", busy=False)
+                    messagebox.showerror(APP_TITLE, f"無法輸出人聲／伴奏：\n{payload}")
         except queue.Empty:
             pass
         self.after(120, self._poll_events)
@@ -687,10 +1240,13 @@ class LyricsSrtApp(tk.Tk):
             tag = "deleted" if segment.deleted else ("music" if segment.kind == MUSIC_KIND else "lyric")
             tags = (tag, "playing") if i == self.playing_row else (tag,)
             self.tree.insert("", "end", iid=str(i), values=(format_timecode(segment.start), format_timecode(segment.end), segment.kind, segment.text), tags=tags)
-        self.tree.tag_configure("music", foreground="#346b39")
-        self.tree.tag_configure("deleted", foreground="#999999")
-        self.tree.tag_configure("playing", background="#dbeafe", foreground="#0f3d75")
+        self.tree.tag_configure("music", foreground=MUSIC_COLOR)
+        self.tree.tag_configure("deleted", foreground=DELETED_COLOR)
+        self.tree.tag_configure("playing", background="#2b4a72", foreground="#eaf4ff")
         if selected and self.tree.exists(selected[0]): self.tree.selection_set(selected[0])
+        if hasattr(self, "waveform"):
+            current_selection = self.tree.selection()
+            self.waveform.set_segments(self.segments, int(current_selection[0]) if current_selection else None)
 
     def push_undo(self, _label: str) -> None:
         self.undo_stack.append(copy.deepcopy(self.segments))
@@ -773,6 +1329,163 @@ class LyricsSrtApp(tk.Tk):
                 handle.write(f"{number}\n{srt_timecode(item.start)} --> {srt_timecode(item.end)}\n{item.text}\n\n")
         self._set_progress_status(f"已匯出：{output}", busy=False)
         messagebox.showinfo(APP_TITLE, "SRT 匯出完成。")
+
+    def export_dynamic_png(self) -> None:
+        """以目前表格（含使用者手動校正後的時間）輸出透明動態字幕序列。"""
+        active = [item for item in self.segments if not item.deleted and item.kind == LYRIC_KIND and item.text.strip()]
+        if not active:
+            messagebox.showinfo(APP_TITLE, "沒有可輸出的歌詞。請先完成 AI 分析，或新增歌詞列。")
+            return
+        if not self.duration:
+            messagebox.showinfo(APP_TITLE, "請先匯入音檔，才能取得完整序列的時間長度。")
+            return
+        parent = filedialog.askdirectory(title="選擇動態字幕 PNG 序列的儲存位置")
+        if not parent:
+            return
+        width, height = PNG_ASPECTS[self.png_aspect_var.get()]
+        stem = self.audio_path.stem if self.audio_path else "lyrics"
+        output = Path(parent) / f"{stem}_動態字幕PNG_{width}x{height}_30fps"
+        if output.exists() and any(output.iterdir()):
+            messagebox.showerror(APP_TITLE, f"輸出資料夾已存在且不是空的：\n{output}\n\n請選擇其他位置，避免覆蓋既有影格。")
+            return
+        self.png_export_btn.configure(state="disabled")
+        self._set_progress_status("正在準備動態字幕 PNG 匯出…", busy=True)
+        # 複製時間軸資料，讓輸出期間仍可安全操作或繼續校正 UI。
+        snapshot = copy.deepcopy(active)
+        style = self.png_animation_var.get()
+        subtitle_style = self._current_subtitle_style()
+        threading.Thread(target=self._run_dynamic_png_export, args=(snapshot, output, width, height, style, subtitle_style), daemon=True).start()
+
+    def _run_dynamic_png_export(self, segments: list[Segment], output: Path, width: int, height: int, style: str, subtitle_style: object) -> None:
+        try:
+            # 延後載入，首次啟動時讓 bootstrap 有機會自動安裝 Pillow。
+            from subtitle_png_renderer import render_sequence
+            frames = render_sequence(segments, self.audio_path, self.duration, output, width, height, 30,
+                                     lambda text: self.events.put(("status", text)), style, subtitle_style)
+            self.events.put(("png_done", (output, frames)))
+        except Exception as exc:
+            self.events.put(("png_error", str(exc)))
+
+    @staticmethod
+    def _hex_to_rgb(value: str) -> tuple[int, int, int]:
+        value = value.lstrip("#")
+        return (int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16))
+
+    def _current_subtitle_style(self):
+        from subtitle_png_renderer import SubtitleStyle
+        valign_map = {"上方": "top", "中間": "middle", "下方": "bottom"}
+        halign_map = {"靠左": "left", "置中": "center", "靠右": "right"}
+        return SubtitleStyle(
+            font_size=int(self.subtitle_font_size_var.get()),
+            text_color=self._hex_to_rgb(self.subtitle_text_color),
+            outline_color=self._hex_to_rgb(self.subtitle_outline_color),
+            valign=valign_map.get(self.subtitle_valign_var.get(), "bottom"),
+            halign=halign_map.get(self.subtitle_halign_var.get(), "center"),
+            offset_x=self.subtitle_offset_x_var.get(),
+            offset_y=self.subtitle_offset_y_var.get(),
+        )
+
+    def _pick_text_color(self) -> None:
+        color = colorchooser.askcolor(color=self.subtitle_text_color, title="選擇文字顏色")[1]
+        if color:
+            self.subtitle_text_color = color
+            self.text_color_btn.configure(background=color, activebackground=color)
+            self._refresh_preview()
+
+    def _pick_outline_color(self) -> None:
+        color = colorchooser.askcolor(color=self.subtitle_outline_color, title="選擇外框顏色")[1]
+        if color:
+            self.subtitle_outline_color = color
+            self.outline_color_btn.configure(background=color, activebackground=color)
+            self._refresh_preview()
+
+    def _preview_dimensions(self) -> tuple[int, int]:
+        width, height = PNG_ASPECTS[self.png_aspect_var.get()]
+        scale = min(300 / width, 220 / height)
+        return max(2, int(width * scale)), max(2, int(height * scale))
+
+    def _refresh_preview(self, now: float | None = None) -> None:
+        """依目前主播放位置重繪內嵌字幕預覽；不寫檔、不影響時間軸。
+
+        `now` 由 `_update_playback` 在播放中傳入即時內插時間；其餘呼叫（拖曳、選取、
+        改樣式）不傳時間，直接使用 `self.playback_offset`（暫停/拖曳後的固定位置）。
+        """
+        if not self.preview_image_label or not self.preview_image_label.winfo_exists():
+            return
+        try:
+            from PIL import ImageTk  # Pillow 由 bootstrap 於首次啟動安裝，尚未就緒時直接跳過。
+            from subtitle_png_renderer import render_preview_frame
+        except ImportError:
+            return
+        try:
+            preview_time = self.playback_offset if now is None else now
+            active = [item for item in self.segments if not item.deleted and item.kind == LYRIC_KIND and item.text.strip()]
+            width, height = self._preview_dimensions()
+            image = render_preview_frame(active, preview_time, width, height, self.png_animation_var.get(), self._current_subtitle_style())
+            self.preview_photo = ImageTk.PhotoImage(image)
+            self.preview_image_label.configure(image=self.preview_photo, width=width, height=height)
+        except Exception:
+            pass  # 預覽是輔助功能，繪製失敗不應打斷主要編輯流程。
+
+    def split_at_playhead(self) -> None:
+        """把選取的歌詞句在目前播放頭位置切成兩句，文字依時間比例自動分配字數。"""
+        idx = self.selected_index()
+        if idx is None:
+            messagebox.showinfo(APP_TITLE, "請先選取一句歌詞。")
+            return
+        segment = self.segments[idx]
+        t = self.playback_offset
+        if segment.kind != LYRIC_KIND:
+            messagebox.showinfo(APP_TITLE, "只能斷開歌詞句，音樂標記無法斷句。")
+            return
+        if not (segment.start < t < segment.end):
+            messagebox.showinfo(APP_TITLE, "請先把播放頭（點聲波時間尺或拖曳滑桿）移到選取句子中間要斷開的位置。")
+            return
+        self.push_undo("斷句")
+        text = segment.text
+        fraction = (t - segment.start) / (segment.end - segment.start)
+        split_index = max(1, min(len(text) - 1, round(len(text) * fraction))) if len(text) > 1 else 1
+        first_text, second_text = text[:split_index] or text, text[split_index:] or text
+        first = Segment(segment.start, t, LYRIC_KIND, first_text)
+        second = Segment(t, segment.end, LYRIC_KIND, second_text)
+        self.segments[idx:idx + 1] = [first, second]
+        self.refresh_tree()
+        self.tree.selection_set(str(idx))
+        self.tree.see(str(idx))
+
+    def export_karaoke_stems(self) -> None:
+        """用 Demucs 把音檔分成人聲／伴奏兩個 WAV 檔，供卡拉OK版本使用。"""
+        if not self.audio_path:
+            messagebox.showinfo(APP_TITLE, "請先匯入音檔。")
+            return
+        parent = filedialog.askdirectory(title="選擇人聲／伴奏 WAV 的儲存位置")
+        if not parent:
+            return
+        stem = self.audio_path.stem
+        output = Path(parent) / f"{stem}_卡拉OK分軌"
+        if output.exists() and any(output.iterdir()):
+            messagebox.showerror(APP_TITLE, f"輸出資料夾已存在且不是空的：\n{output}\n\n請選擇其他位置。")
+            return
+        self.karaoke_btn.configure(state="disabled")
+        self._set_progress_status("正在分離人聲與伴奏，首次使用會下載 Demucs 模型…", busy=True)
+        threading.Thread(target=self._run_karaoke_export, args=(self.audio_path, output), daemon=True).start()
+
+    def _run_karaoke_export(self, path: Path, output: Path) -> None:
+        temporary_dir: Path | None = None
+        try:
+            self._ensure_dependencies()
+            vocal_path, temporary_dir = self._separate_vocals(path)
+            accompaniment_path = vocal_path.parent / "no_vocals.wav"
+            output.mkdir(parents=True, exist_ok=True)
+            shutil.copy(vocal_path, output / f"{path.stem}_人聲.wav")
+            if accompaniment_path.exists():
+                shutil.copy(accompaniment_path, output / f"{path.stem}_伴奏.wav")
+            self.events.put(("karaoke_done", output))
+        except Exception as exc:
+            self.events.put(("karaoke_error", str(exc)))
+        finally:
+            if temporary_dir:
+                shutil.rmtree(temporary_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

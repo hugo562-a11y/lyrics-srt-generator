@@ -1,21 +1,22 @@
 # 歌詞 SRT 產生器：交接說明
 
-最後更新：2026-07-12
+最後更新：2026-07-14（字幕樣式可調、預覽內嵌主視窗、斷句、卡拉OK分軌）
 GitHub：<https://github.com/hugo562-a11y/lyrics-srt-generator>
 目前分支：`main`
 
 ## 專案目的
 
-Windows Python 桌面程式：匯入歌曲音檔，以本機 Whisper 取得演唱時間，搭配使用者提供的正確歌詞產生含 `[前奏]`、`[間奏]`、`[尾奏]` 的 SRT。匯出前可在程式內播放並檢查文字跟隨位置。
+Windows Python 桌面程式：匯入歌曲音檔，以本機 Whisper 取得演唱時間，搭配使用者提供的正確歌詞產生含 `[前奏]`、`[間奏]`、`[尾奏]` 的 SRT。可在程式內校正時間、試聽，並把校正後的歌詞輸出為帶透明背景的動態字幕 PNG 序列。
 
 ## 目前檔案結構
 
 ```text
-app.py          Tkinter 主程式、Whisper 分析、歌詞對齊、SRT、播放控制
+app.py                   Tkinter 主程式、Whisper 分析、歌詞對齊、SRT、播放／預覽／PNG 匯出 UI
+subtitle_png_renderer.py 透明 RGBA PNG 字幕渲染器、動畫樣式、單影格預覽與序列輸出
 bootstrap.py    自動檢查／安裝 Python 套件、CUDA DLL 路徑與 runtime
-requirements.txt 基本 Python 依賴
+requirements.txt         基本 Python 依賴（含 Pillow）
 run.bat         建立 .venv 後啟動程式
-build_exe.bat   PyInstaller Windows 打包腳本
+build_exe.bat   PyInstaller Windows 打包腳本（含 Pillow 與字幕渲染器）
 README.md       使用說明
 HANDOFF.md      本文件
 ```
@@ -32,6 +33,16 @@ HANDOFF.md      本文件
 - 使用參考歌詞時，完整分析不啟用 VAD，避免拖音被切掉；另執行一次保守 VAD 來找第一句人聲，保留前奏空檔。
 - 依歌詞間空檔產生 `[前奏]`、`[間奏]`、`[尾奏]`；門檻由「最短音樂段」控制。
 - 表格可雙擊編輯開始、結束、類型、文字；具新增、刪除／還原、Undo/Redo、SRT 匯出。
+- 動態透明字幕 PNG 匯出：讀取**目前表格內未刪除的歌詞列**及已校正時間，排除 `[前奏]`／`[間奏]`／`[尾奏]` 等音樂標記；輸出完整音檔長度的 RGBA PNG 序列，音樂段為透明影格，因此影像序列可從第 1 張直接對齊音檔。
+  - 固定 30 fps，檔名為 `lyrics_000001.png` 起的六位數連番。
+  - 畫面比例可選：16:9（1920×1080）、9:16（1080×1920）、1:1（1080×1080）、4:3（1440×1080）。直式／方形會調整安全邊界、字級與中文逐字換行。
+  - 動畫可選：`逐字點亮`（白字逐字轉琥珀色）、`彈跳聚焦`、`滑入淡出`、`電影柔和`。所有樣式都維持透明背景、描邊及柔和發光；匯出時依音檔振幅做細微縮放律動。
+  - 匯出前由資料夾選擇器指定上層資料夾，程式依音檔名稱、解析度與 fps 建立子資料夾；若子資料夾非空會拒絕輸出，避免覆蓋既有影格。
+- 動態字幕預覽（已內嵌主視窗，2026-07-14 重構）：表格右側固定顯示「字幕預覽」面板，**跟隨主播放器的時間軸即時更新**，不再是獨立彈出視窗、不再有自己的一套播放/暫停/拖曳。播放主音檔、拖曳聲波、點表格列、seek 時都會同步重繪；`_update_playback` 每 tick（75ms）都會呼叫 `_refresh_preview`，播放中傳入即時內插時間，暫停時使用 `self.playback_offset`。不寫出檔案、不更動時間軸。
+- 字幕樣式可調（`subtitle_png_renderer.SubtitleStyle`）：底部「字幕樣式與匯出」面板可設定字級大小、文字顏色／外框顏色（`tkinter.colorchooser`）、垂直位置（上方／中間／下方）、水平位置（靠左／置中／靠右），另有左右／上下偏移滑桿做微調。所有設定即時反映在內嵌預覽，匯出 PNG 序列時也會套用同一份設定（`export_dynamic_png` → `_current_subtitle_style()`）。
+  - **修正重要 bug**：原始版本（GPT Code 所寫）在 `_draw()` 內寫死比對特定字詞（`"Kawasaki"`、`"Z900RS"`、`"九個月"`、`"火之玉"`、`"高轉速"`）來決定要不要放大字級、套用橘色強調色──這是針對單一使用者的測試歌曲寫死的邏輯，換成別首歌完全沒有意義而且無法真正做到「顏色可設定」。已整個移除，改用 `SubtitleStyle` 統一控制。
+- 斷句（`split_at_playhead`）：選取一句歌詞、把播放頭移到句子中間要斷開的位置，按「✂ 在此斷句」，時間依比例切成兩段、文字也依字數比例自動分配到兩句（切完仍可雙擊微調文字）；只能對歌詞句斷句，音樂標記或播放頭不在句子範圍內會提示錯誤。會計入 Undo。
+- 卡拉OK人聲／伴奏匯出（`export_karaoke_stems`）：重用既有的 `_separate_vocals`（Demucs `--two-stems vocals`），把 `vocals.wav` 與 `no_vocals.wav` 複製為 `<檔名>_人聲.wav`／`<檔名>_伴奏.wav` 存到使用者指定資料夾，不像對齊用途那樣即用即丟。
 - 可選 Demucs 人聲分離（首次按需安裝及下載模型）；若其安裝失敗，關閉勾選仍可用。
 - 進度條：下載套件、模型、CUDA runtime、人聲分離、AI 分析時顯示活動動畫。
 - 預聽：使用系統 FFmpeg 的 `ffplay`，避免 Python 3.14 無 pygame wheel 的編譯失敗。
@@ -47,14 +58,25 @@ HANDOFF.md      本文件
 - **分析完成摘要**：顯示歌詞句數與音樂段數。
 - **重疊段自動修正**：後處理階段自動修正相鄰段的時間重疊。
 - **幻聽過濾**：偵測連續重複文字（Whisper 幻聽），保留第一次出現。
+- 聲波與時間軸（`WaveformView`，`app.py` 內）：匯入音檔後背景用 `ffmpeg` 解碼成單聲道 PCM（`decode_waveform`，取樣率 4000Hz）畫出波形，疊上每句歌詞／音樂段的色塊與可拖曳的起訖邊界。
+  - 點時間尺（上緣）：跳轉播放位置。
+  - 點聲波上的句子色塊：等同點表格該列（選取＋從該句開始播放）。
+  - 拖曳色塊邊界（橘色豎線）：即時調整該句開始或結束時間，放開滑鼠才提交（會計入 Undo）。
+  - ＋／－／符合視窗：縮放時間軸；滾輪＝以游標時間點為中心縮放；按住滑鼠中鍵拖曳＝平移（`canvas.scan_mark`/`scan_dragto`）。
+  - 每句色塊起訖邊界改用不同顏色區分：綠色＝開始、紅色＝結束；相鄰句子之間會保留約 2px 視覺間隙（`WaveformView.GAP_PX`），避免色塊黏在一起難以分辨與拖曳（純視覺，實際時間資料不變）。
+  - 點聲波色塊或表格列只會**選取＋移動播放頭**（`_activate_segment`），不會強制開始播放；只有原本就在播放中才會接續從新位置播放。要真正開始播放請按空白鍵、播放鈕，或「▶ 只播選取句」。這是為了讓使用者能單純點選、拖曳校正邊界，不會每點一下就被強制播放打斷。
+  - 聲波解碼失敗（例如缺 `ffmpeg.exe`）只會提示訊息，不影響辨識、表格編輯、匯出等其他功能。
+- 空白鍵＝播放／暫停（全域快捷鍵，`_on_space_key`）。焦點在文字輸入框（表格內雙擊編輯用的 `ttk.Entry`／`ttk.Combobox`）時空白鍵仍正常輸入，不會觸發播放。
+- 暗色主題：`ttk.Style` 改用 `theme_use("clam")`（唯一能完全套用自訂顏色的內建主題），並在 `_build_ui` 開頭統一設定深色配色。另外用 `DwmSetWindowAttribute` 讓 Windows 10/11 的原生標題列也一併變暗。
 
 ## 重要設計與環境資訊
 
 - 開發端 Python 為 `C:\Python314\python.exe`。這造成 `pygame` 無法取得 wheel；不要改回 pygame。
-- 本機已有 `C:\Program Files\ffmpeg\bin\ffplay.exe`，且 `ffprobe` / `ffplay` 都在 PATH。
+- 本機已有 `C:\Program Files\ffmpeg\bin\`，`ffmpeg` / `ffprobe` / `ffplay` 都在 PATH。聲波顯示（`decode_waveform`）額外需要 `ffmpeg.exe`（之前只有播放與探測長度用到 `ffplay`／`ffprobe`）。
 - GPU：RTX 3070，NVIDIA Driver 581.57（顯示 CUDA 13）。系統沒有 CUDA Toolkit / `nvcc` / `CUDA_PATH`。
 - `nvidia-cublas-cu12` 已在使用者 site-packages，但 `nvidia-cudnn-cu12` 初次尚未安裝；`bootstrap.py` 會處理 DLL 目錄與安裝。
 - 工作區目前有使用者私有、未追蹤檔案：歌詞 TXT、測試 MP3、輸出的 SRT。**不要 add、commit 或刪除它們。**
+- `Pillow>=10.0.0` 現在是必要依賴，`bootstrap.py` 會在首次啟動檢查並自動安裝；不要把 `subtitle_png_renderer` 的 import 移到 `app.py` 頂端，因為現行做法在工作執行緒內延後 import，能配合首次自動安裝流程。
 
 ## 最近修改與已知限制
 
@@ -67,6 +89,13 @@ HANDOFF.md      本文件
 
 此方法已通過純邏輯測試，但**尚未以實際完整歌曲反覆人工驗聽**；這是最高優先驗證項目。若仍不準，最值得做的是把「第一句人聲起點」與「逐句對齊」視覺化，或導入真正的強制對齊模型；目前是基於 Whisper 時間錨點的近似對齊。
 
+### 聲波時間軸
+
+已用假資料與真實 `等了九個月 -60sc.mp3` 跑過邏輯測試（拖曳邊界、點選段落、點時間尺跳轉、縮放、undo）以及啟動整支程式確認無例外，但**尚未實際在 GUI 上用滑鼠操作驗證手感**（例如拖曳精確度、句子文字重疊、長歌曲下的效能）。已知限制：
+- 句子文字標籤沒有裁切，短間奏或連續短句時文字可能互相重疊。
+- 聲波是用 `ffmpeg -ar 4000` 直接降採樣取得（非真正 min/max peak-picking），屬於粗略能量包絡，只供對齊參考，不是精確波形。
+- 拖曳只影響單一句的起點或終點，不會連動調整相鄰句子；若使用者想要「無縫接續」需自行對齊。
+
 ### 播放器
 
 `ffplay` 由 subprocess 啟動，程式用 `time.monotonic()` 推算播放游標。這對預聽足夠，但不是 sample-accurate。`ffplay -ss` 對某些格式的 seek 精度可能有限。
@@ -77,12 +106,23 @@ HANDOFF.md      本文件
 
 ### 打包
 
-`build_exe.bat` 目前使用 PyInstaller 收集 `faster_whisper` / `ctranslate2`。尚未實做真正 EXE 打包與乾淨電腦測試。發佈前需測試模型下載、FFmpeg 隨附或 PATH、GPU/CPU fallback。
+`build_exe.bat` 目前使用 PyInstaller 收集 `faster_whisper` / `ctranslate2` / `PIL`，並明確加入 `subtitle_png_renderer` hidden import。尚未實做真正 EXE 打包與乾淨電腦測試。發佈前需測試模型下載、FFmpeg 隨附或 PATH、GPU/CPU fallback，以及透明 PNG 匯出是否可於目標剪輯軟體正確解讀 alpha。
+
+### 動態字幕功能的驗證與限制
+
+- 已執行 `python -m py_compile app.py bootstrap.py subtitle_png_renderer.py`。
+- 已以程式化 smoke test 驗證：四種動畫都能產生 RGBA 預覽影格；`SubtitleStyle` 的顏色／位置／偏移都能正確反映在輸出像素上（用 `getbbox()`／像素取樣驗證過置頂、置左、置中偏移、顏色比對）；`render_sequence` 帶入自訂 `SubtitleStyle` 可正常輸出整個序列；`split_at_playhead` 依比例切時間與文字；`_run_karaoke_export`（Demucs 呼叫已 mock）能正確複製、更名兩個 WAV 並清理暫存目錄。
+- 已用內部截圖（在同一 Python 行程內呼叫 `PIL.ImageGrab`，並在截圖前呼叫 `ctypes.windll.shcore.SetProcessDpiAwareness(2)` 避免跨行程 DPI 縮放造成截圖對不齊）確認整體版面：內嵌預覽面板、字幕樣式列、位置列、匯出按鈕都正常顯示、不會被視窗邊界裁切；播放頭移動到某句時預覽面板會即時顯示對應文字與逐字點亮動畫。
+- **尚未**用滑鼠實際操作驗證：拖曳字級/位置滑桿的手感、色彩選擇器彈窗流程、真正跑一次 Demucs 分離產生的 WAV 音質與檔案大小、真的輸出一段 PNG 序列後匯入剪輯軟體檢查文字位置。這些是目前最高優先的人工驗證項目。
+- PNG 序列為逐張以 Pillow 渲染並壓縮；長歌曲／高解析度輸出會花時間和磁碟空間。輸出在背景執行緒進行，狀態列每約 3 秒更新一次張數。
+- 預覽的音量律動採固定細微值，目的是快速顯示字幕動畫；實際 PNG 匯出才會用 FFmpeg 解碼音檔並依每影格能量調整縮放。
+- 目前仍固定 30 fps、沒有自訂解析度或單句動畫覆寫 UI（例如某一句想用跟其他句不同的顏色）；若後續要做，優先擴充 `subtitle_png_renderer.SubtitleStyle`，或改成每句可覆寫全域樣式的設計。
+- 視窗預設大小已從 1080×780 放大為 1360×960（`minsize` 1150×760）以容納右側預覽面板與新增的樣式列；如果使用者螢幕解析度較小，視窗可能需要手動再縮小，表格區域會自動壓縮（`rowconfigure(3, weight=1)`），但字幕樣式列與底部工具列是固定高度、不會被壓縮或裁切。
 
 ## 驗證指令
 
 ```powershell
-python -m py_compile app.py bootstrap.py
+python -m py_compile app.py bootstrap.py subtitle_png_renderer.py
 python app.py
 ```
 
@@ -93,10 +133,15 @@ python app.py
 - 後段 AI 文字皆錯時，字數約束仍將歌詞分佈至最後錨點。
 - 進度列接線。
 - `ffplay -version` 可執行。
+- 四種字幕動畫的 RGBA 單影格 smoke test。
 
 ## 建議下一步
 
-1. 先以使用者的 `等了九個月 -60sc.mp3` 與其 TXT，在 GUI 實際跑一次，播放檢查 `[前奏]`、後段與單句播放。
+1. 先以使用者的 `等了九個月 -60sc.mp3` 與其 TXT，在 GUI 實際跑一次，播放檢查 `[前奏]`、後段與單句播放，並實際用滑鼠拖曳聲波上的句子邊界確認手感與精確度。
 2. 若前奏仍消失，檢查兩次 Whisper 分析的第一個 segment 時間；可能需要提供手動「前奏結束」時間或更可靠人聲檢測。
-3. 若後段仍漂移，考慮加入波形、拖曳句首／句尾與鍵盤 50ms 微調；或評估可在 Python 3.14 使用的強制對齊方案。
-4. 以乾淨 Windows 使用者環境測試 `run.bat` / `build_exe.bat`。
+3. 若後段仍漂移，可直接在新的聲波時間軸上拖曳句尾校正；長期仍可評估可在 Python 3.14 使用的強制對齊方案。
+4. 視覺上如果句子文字重疊影響閱讀，可考慮加入文字裁切或滑鼠懸停顯示完整文字。
+5. 以乾淨 Windows 使用者環境測試 `run.bat` / `build_exe.bat`（新增的聲波功能需要 `ffmpeg.exe` 在 PATH 內）。
+6. 實際跑一次「匯出人聲／伴奏（卡拉OK）」，確認 Demucs 首次下載模型、`vocals.wav`／`no_vocals.wav` 分軌音質可接受，且輸出的資料夾與檔名符合預期。
+7. 實際用滑鼠操作字幕樣式列：換顏色、拖字級/位置/偏移滑桿，確認內嵌預覽即時反映；再各輸出一段短的動態 PNG 序列，匯入 Premiere/DaVinci 檢查透明 alpha、位置、顏色是否與預覽一致、30 fps 與首張是否對齊音檔。
+8. 試試「✂ 在此斷句」在多種情境（句首附近、句尾附近、極短句）的行為是否符合預期；目前字數是照時間比例硬切，中文斷句不一定落在語意合理的位置，仍需人工微調文字。
