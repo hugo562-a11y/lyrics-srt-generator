@@ -773,7 +773,8 @@ class LyricsSrtApp(tk.Tk):
         self.preview_image_label.bind("<MouseWheel>", self._on_preview_scroll)
         self.preview_image_label.bind("<Button-4>", self._on_preview_scroll)
         self.preview_image_label.bind("<Button-5>", self._on_preview_scroll)
-        self._preview_resize_id = self.preview_image_label.bind("<Configure>", lambda _e: self._refresh_preview())
+        self._last_preview_size = (0, 0)
+        self.preview_image_label.bind("<Configure>", self._on_preview_resize)
 
         style_frame = ttk.LabelFrame(right, text=" 字幕樣式 ", padding=(10, 8))
         style_frame.grid(row=1, column=0, sticky="ew")
@@ -1612,6 +1613,15 @@ class LyricsSrtApp(tk.Tk):
             current = self.preview_zoom_var.get()
             new_zoom = max(0.3, min(3.0, current + delta * 0.1))
             self.preview_zoom_var.set(round(new_zoom, 2))
+            self._refresh_preview()
+
+    def _on_preview_resize(self, _event) -> None:
+        if not self.preview_image_label or not self.preview_image_label.winfo_exists():
+            return
+        w, h = self.preview_image_label.winfo_width(), self.preview_image_label.winfo_height()
+        lw, lh = self._last_preview_size
+        if abs(w - lw) > 5 or abs(h - lh) > 5:
+            self._last_preview_size = (w, h)
             self._refresh_preview()
 
     def _refresh_preview(self, now: float | None = None) -> None:
