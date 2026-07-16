@@ -1938,4 +1938,38 @@ class LyricsSrtApp(tk.Tk):
 
 
 if __name__ == "__main__":
+    import threading as _th
+
+    def _install_splash() -> None:
+        """顯示安裝等待視窗，完成後自動關閉。"""
+        splash = tk.Tk()
+        splash.title("正在準備環境")
+        splash.geometry("420x140")
+        splash.resizable(False, False)
+        splash.configure(bg="#1e1e2e")
+        splash.protocol("WM_DELETE_WINDOW", lambda: None)
+        ttk.Label(splash, text="正在檢查並安裝必要套件…", background="#1e1e2e", foreground="#cdd6f4",
+                  font=("Microsoft JhengHei UI", 12)).pack(pady=(24, 8))
+        status_var = tk.StringVar(value="正在掃描…")
+        status_lbl = ttk.Label(splash, textvariable=status_var, background="#1e1e2e", foreground="#a6adc8",
+                               font=("Microsoft JhengHei UI", 9))
+        status_lbl.pack()
+        bar = ttk.Progressbar(splash, mode="indeterminate", length=300)
+        bar.pack(pady=12)
+        bar.start(10)
+        _result: list[bool] = [False]
+
+        def _do_install() -> None:
+            try:
+                ensure_required_packages(lambda t: splash.after(0, status_var.set, t))
+                _result[0] = True
+            except Exception:
+                _result[0] = True
+            splash.after(0, splash.destroy)
+
+        _th.Thread(target=_do_install, daemon=True).start()
+        splash.mainloop()
+        return
+
+    _install_splash()
     LyricsSrtApp().mainloop()
