@@ -57,14 +57,16 @@ def _verify_import(module: str) -> bool:
 
 # ── 主要安裝流程 ──────────────────────────────────────────────────
 def ensure_required_packages(status: Status) -> None:
-    """啟動前完整檢查所有必要套件，缺什麼裝什麼，裝完驗證。
+    """啟動前完整檢查所有必要套件，缺什麼裝什麼，裝完驗證。"""
+    all_ok = all(
+        importlib.util.find_spec(mod) is not None and _verify_import(mod)
+        for mod, _spec, opt in ALL_PACKAGES if not opt
+    )
+    if all_ok:
+        status("所有必要套件已就緒。")
+        check_ffmpeg(status)
+        return
 
-    流程：
-    1. 升級 pip / setuptools / wheel
-    2. 逐一檢查每個必要套件：缺就裝、壞就重裝
-    3. 選用套件同樣處理
-    4. 回傳時所有必要套件必定已可正常 import
-    """
     status("正在升級 pip 與 setuptools…")
     _pip_install(["pip", "setuptools", "wheel"], status)
 
@@ -92,6 +94,7 @@ def ensure_required_packages(status: Status) -> None:
             tag = "（選用）" if optional else ""
             status(f"[OK] {spec} 已就緒{tag}")
 
+    check_ffmpeg(status)
     status("所有必要套件已就緒。")
 
 

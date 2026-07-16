@@ -103,19 +103,28 @@ def _draw(frame: "Image.Image", item: object, now: float, energy: float, width: 
     enter, leave = _smooth(local / enter_duration), _smooth((end - now) / leave_duration)
     base_alpha = int(255 * min(enter, leave))
 
-    line_h = int(font.size * 1.34)
+    margin_y = height * 0.08
+    available_h = height - margin_y * 2
+    line_h_ratio = 1.34
+    max_lines = max(1, int(available_h / (font.size * line_h_ratio)))
+
+    if len(lines) > max_lines:
+        safe_size = max(16, int(font.size * max_lines / len(lines)))
+        lines, font = _fit_lines(text, font_path, int(width * 0.80), safe_size, max_lines=max_lines)
+
+    line_h = int(font.size * line_h_ratio)
     block_h = line_h * len(lines)
 
     chars = max(1, len(text.replace(" ", "")))
     karaoke = min(duration * .70, max(.55, duration - .28))
 
-    margin_y = height * 0.08
     if subtitle_style.valign == "top":
         base_top = margin_y
     elif subtitle_style.valign == "middle":
         base_top = (height - block_h) / 2
     else:
         base_top = height - margin_y - block_h
+    base_top = max(0, min(base_top, height - block_h))
     margin_x = width * 0.10
 
     layer = Image.new("RGBA", frame.size, (0, 0, 0, 0))
