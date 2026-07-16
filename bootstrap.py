@@ -26,26 +26,46 @@ GPU_PACKAGES = ("nvidia-cublas-cu12", "nvidia-cudnn-cu12")
 Status = Callable[[str], None]
 
 
-def _pip_install(packages: list[str], status: Status) -> bool:
+def _pip_install(packages: list[str], status: Status, extra_args: list[str] | None = None) -> bool:
     """安裝套件，回傳 True 表示成功、False 表示失敗（不丟擲例外）。"""
     status("正在下載必要套件：" + ", ".join(packages))
-    command = [sys.executable, "-m", "pip", "install", "--upgrade", *packages]
+    command = [sys.executable, "-m", "pip", "install", "--upgrade"]
+    if extra_args:
+        command.extend(extra_args)
+    command.extend(packages)
     result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     if result.returncode:
-        tail = result.stdout[-800:] if result.stdout else ""
-        status(f"套件安裝失敗（{packages[0]}），將在下次啟動時重試。")
+        status(f"安裝失敗：{packages[0]}")
         return False
     return True
 
 
+def _verify_import(module: str) -> bool:
+    """驗證模組可正常 import，DLL 載入失敗也能偵測。"""
+    try:
+        importlib.import_module(module)
+        return True
+    except Exception:
+        return False
+
+
 def ensure_required_packages(status: Status) -> None:
     """只安裝目前環境缺少的套件，不重複下載已安裝內容。"""
-    missing = [spec for module, spec in REQUIRED_PACKAGES.items() if importlib.util.find_spec(module) is None]
-    if missing:
-        _pip_install(missing, status)
-    missing_opt = [spec for module, spec in OPTIONAL_PACKAGES.items() if importlib.util.find_spec(module) is None]
-    if missing_opt:
-        _pip_install(missing_opt, status)
+    status("正在升級 pip 與 setuptools…")
+    _pip_install(["pip", "setuptools", "wheel"], status)
+
+    for module, spec in REQUIRED_PACKAGES.items():
+        if importlib.util.find_spec(module) is None or not _verify_import(module):
+            status(f"正在安裝 {spec}…")
+            _pip_install([spec], status)
+            if not _verify_import(module):
+                status(f"重新安裝 {spec}…")
+                _pip_install([spec], status, extra_args=["--force-reinstall"])
+
+    for module, spec in OPTIONAL_PACKAGES.items():
+        if importlib.util.find_spec(module) is None or not _verify_import(module):
+            status(f"正在安裝 {spec}…")
+            _pip_install([spec], status)
     status("必要套件已就緒。")
 
 
