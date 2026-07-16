@@ -7,9 +7,10 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import TYPE_CHECKING, Callable, Iterable
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+if TYPE_CHECKING:
+    from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 
 Progress = Callable[[str], None]
@@ -67,7 +68,8 @@ def _energy(audio_path: Path | None, fps: int, frames: int) -> list[float]:
     return [min(1.0, values[min(i, len(values) - 1)] / peak) if values else 0.0 for i in range(frames)]
 
 
-def _fit_lines(text: str, font_path: Path, max_width: int, size: int) -> tuple[list[str], ImageFont.FreeTypeFont]:
+def _fit_lines(text: str, font_path: Path, max_width: int, size: int) -> tuple[list[str], "ImageFont.FreeTypeFont"]:
+    from PIL import ImageFont
     while size >= 24:
         font = ImageFont.truetype(str(font_path), size, index=0)
         if font.getlength(text) <= max_width:
@@ -84,7 +86,8 @@ def _fit_lines(text: str, font_path: Path, max_width: int, size: int) -> tuple[l
     return [text], ImageFont.truetype(str(font_path), 24, index=0)
 
 
-def _draw(frame: Image.Image, item: object, now: float, energy: float, width: int, height: int, style: str, subtitle_style: SubtitleStyle) -> None:
+def _draw(frame: "Image.Image", item: object, now: float, energy: float, width: int, height: int, style: str, subtitle_style: SubtitleStyle) -> None:
+    from PIL import Image, ImageDraw, ImageFilter, ImageFont
     text, start, end = item.text, item.start, item.end
     font_path = Path(subtitle_style.font_path) if subtitle_style.font_path and Path(subtitle_style.font_path).exists() else _font_path()
     lines, font = _fit_lines(text, font_path, int(width * 0.80), subtitle_style.font_size)
@@ -329,7 +332,8 @@ def _draw(frame: Image.Image, item: object, now: float, energy: float, width: in
     frame.alpha_composite(layer)
 
 
-def render_preview_frame(segments: Iterable[object], now: float, width: int, height: int, style: str, subtitle_style: SubtitleStyle | None = None) -> Image.Image:
+def render_preview_frame(segments: Iterable[object], now: float, width: int, height: int, style: str, subtitle_style: SubtitleStyle | None = None) -> "Image.Image":
+    from PIL import Image
     image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     for item in segments:
         if item.start <= now < item.end:
@@ -339,6 +343,7 @@ def render_preview_frame(segments: Iterable[object], now: float, width: int, hei
 
 
 def render_sequence(segments: Iterable[object], audio_path: Path | None, duration: float, output: Path, width: int, height: int, fps: int, status: Progress, style: str = "逐字點亮", subtitle_style: SubtitleStyle | None = None) -> int:
+    from PIL import Image
     subtitle_style = subtitle_style or DEFAULT_STYLE
     items = sorted((item for item in segments if item.end > item.start), key=lambda item: item.start)
     if not items: raise RuntimeError("沒有可輸出的歌詞。")
