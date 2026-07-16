@@ -70,15 +70,19 @@ def _energy(audio_path: Path | None, fps: int, frames: int) -> list[float]:
 
 def _fit_lines(text: str, font_path: Path, max_width: int, size: int, max_lines: int = 4) -> tuple[list[str], "ImageFont.FreeTypeFont"]:
     from PIL import ImageFont
+
+    def _line_width(f: "ImageFont.FreeTypeFont", t: str) -> float:
+        return sum(f.getlength(ch) for ch in t)
+
     best_lines, best_font = [text], ImageFont.truetype(str(font_path), max(24, size), index=0)
     while size >= 20:
         font = ImageFont.truetype(str(font_path), size, index=0)
-        if font.getlength(text) <= max_width:
+        if _line_width(font, text) <= max_width:
             return [text], font
         line, lines = "", []
         for character in text:
             candidate = line + character
-            if line and font.getlength(candidate) > max_width:
+            if line and _line_width(font, candidate) > max_width:
                 lines.append(line); line = character
             else: line = candidate
         if line: lines.append(line)
