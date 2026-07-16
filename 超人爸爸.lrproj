@@ -1,0 +1,109 @@
+{
+  "version": 1,
+  "audio_path": "C:\\Users\\teacher\\Documents\\lyrics-srt-generator-main\\超人爸爸.mp3",
+  "duration": 34.75997916666667,
+  "reference_lyrics": [
+    "我的爸爸  是世界上最厲害的超人",
+    "雖然他的肚子  有一點點大",
+    "會開大車車  還會幫我抓大甲蟲",
+    "只要有他在  我就什麼都不怕",
+    "祝我最愛的超人爸爸  父親節快樂！",
+    "今天換我  把最愛的布丁分你吃一個",
+    "大手牽小手  我們要一直大聲笑著",
+    "爸爸我愛你！你是最棒的！",
+    "最愛你囉！"
+  ],
+  "segments": [
+    {
+      "start": 0.0,
+      "end": 3.88,
+      "kind": "歌詞",
+      "text": "我的爸爸  是世界上最厲害的超人",
+      "deleted": false
+    },
+    {
+      "start": 3.88,
+      "end": 6.74,
+      "kind": "歌詞",
+      "text": "雖然他的肚子  有一點點大",
+      "deleted": false
+    },
+    {
+      "start": 6.74,
+      "end": 10.78,
+      "kind": "歌詞",
+      "text": "會開大車車  還會幫我抓大甲蟲",
+      "deleted": false
+    },
+    {
+      "start": 10.78,
+      "end": 14.8,
+      "kind": "歌詞",
+      "text": "只要有他在  我就什麼都不怕",
+      "deleted": false
+    },
+    {
+      "start": 14.8,
+      "end": 17.98,
+      "kind": "歌詞",
+      "text": "祝我最愛的超人爸爸  父親節快樂！",
+      "deleted": false
+    },
+    {
+      "start": 17.98,
+      "end": 22.28,
+      "kind": "歌詞",
+      "text": "今天換我  把最愛的布丁分你吃一個",
+      "deleted": false
+    },
+    {
+      "start": 22.28,
+      "end": 26.1,
+      "kind": "歌詞",
+      "text": "大手牽小手  我們要一直大聲笑著",
+      "deleted": false
+    },
+    {
+      "start": 26.1,
+      "end": 29.58,
+      "kind": "歌詞",
+      "text": "爸爸我愛你！你是最棒的！",
+      "deleted": false
+    },
+    {
+      "start": 29.58,
+      "end": 30.66,
+      "kind": "歌詞",
+      "text": "最愛你囉！",
+      "deleted": false
+    },
+    {
+      "start": 30.66,
+      "end": 34.75997916666667,
+      "kind": "音樂",
+      "text": "[尾奏]",
+      "deleted": false
+    }
+  ],
+  "settings": {
+    "png_aspect": "9:16（1080×1920）",
+    "png_animation": "逐字點亮",
+    "font_size": 38,
+    "font_name": "Microsoft JhengHei Bold & Microsoft JhengHei UI Bold",
+    "font_path": "C:\\Windows\\Fonts\\msjhbd.ttc",
+    "text_color": "#f6f7f4",
+    "outline_color": "#100c09",
+    "valign": "下方",
+    "halign": "置中",
+    "offset_x": 0.0,
+    "offset_y": 0.0,
+    "anim_intensity": 1.0,
+    "anim_speed": 1.0,
+    "model": "large-v3",
+    "language": "zh",
+    "device": "CPU",
+    "precise": true,
+    "vocals": true,
+    "force_align": true
+  }
+}
