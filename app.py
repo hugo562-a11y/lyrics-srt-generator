@@ -786,7 +786,7 @@ class LyricsSrtApp(tk.Tk):
         self.temperature_var = tk.StringVar(value="0")
         ttk.Entry(opts_row, textvariable=self.temperature_var, width=4).pack(side="left", padx=(0, 8))
         ttk.Label(opts_row, text="非語音").pack(side="left", padx=(0, 2))
-        self.no_speech_var = tk.StringVar(value="0.6")
+        self.no_speech_var = tk.StringVar(value="0.4")
         ttk.Entry(opts_row, textvariable=self.no_speech_var, width=4).pack(side="left")
         status_row = ttk.Frame(ai_frame)
         status_row.grid(row=2, column=0, columnspan=7, sticky="ew", pady=(6, 0))
@@ -1232,7 +1232,7 @@ class LyricsSrtApp(tk.Tk):
             raise RuntimeError("人聲分離沒有產生 vocals.wav。")
         return vocal_path, output_dir
 
-    def _run_transcription(self, path: Path, model_name: str, language: str, device_choice: str, min_gap: float, reference: list[str], precise: bool, separate_vocals: bool, temperature: float = 0.0, no_speech: float = 0.6, force_align: bool = False, intro_filter: bool = True) -> None:
+    def _run_transcription(self, path: Path, model_name: str, language: str, device_choice: str, min_gap: float, reference: list[str], precise: bool, separate_vocals: bool, temperature: float = 0.0, no_speech: float = 0.4, force_align: bool = False, intro_filter: bool = True) -> None:
         temporary_dir: Path | None = None
         try:
             self._ensure_dependencies()
