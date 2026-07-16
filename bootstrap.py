@@ -72,6 +72,8 @@ def ensure_required_packages(status: Status) -> None:
     _pip_install(["pip", "setuptools", "wheel"], status)
 
     for module, spec, optional in ALL_PACKAGES:
+        if optional:
+            continue
         installed = importlib.util.find_spec(module) is not None
         works = installed and _verify_import(module)
 
