@@ -97,7 +97,7 @@ def _draw(frame: "Image.Image", item: object, now: float, energy: float, width: 
     from PIL import Image, ImageDraw, ImageFilter, ImageFont
     text, start, end = item.text, item.start, item.end
     font_path = Path(subtitle_style.font_path) if subtitle_style.font_path and Path(subtitle_style.font_path).exists() else _font_path()
-    lines, font = _fit_lines(text, font_path, int(width * 0.80), subtitle_style.font_size)
+    lines, font = _fit_lines(text, font_path, max(200, int(width * 0.80) - 120), subtitle_style.font_size)
     local, duration = now - start, end - start
     intensity = subtitle_style.anim_intensity
     speed = subtitle_style.anim_speed
@@ -114,7 +114,7 @@ def _draw(frame: "Image.Image", item: object, now: float, energy: float, width: 
 
     if len(lines) > max_lines:
         safe_size = max(16, int(font.size * max_lines / len(lines)))
-        lines, font = _fit_lines(text, font_path, int(width * 0.80), safe_size, max_lines=max_lines)
+        lines, font = _fit_lines(text, font_path, max(200, int(width * 0.80) - 120), safe_size, max_lines=max_lines)
 
     line_h = int(font.size * line_h_ratio)
     block_h = line_h * len(lines)
