@@ -333,7 +333,7 @@ def _draw(frame: "Image.Image", item: object, now: float, energy: float, width: 
                     trail_layer.alpha_composite(trail_glyph, (tx, ty))
                 layer.alpha_composite(trail_layer)
 
-            glow_pos = (int(x - 40 + extra_x), int(draw_y + 10))
+            glow_pos = (max(0, min(int(x - 40 + extra_x), width - glow.width)), max(0, min(int(draw_y + 10), height - glow.height)))
             layer.alpha_composite(glow, glow_pos)
 
             if total_scale != 1:
@@ -342,7 +342,9 @@ def _draw(frame: "Image.Image", item: object, now: float, energy: float, width: 
             else:
                 position = (int(x - 40 + extra_x), int(draw_y + 10))
 
-            layer.alpha_composite(glyph, position)
+            gx = max(0, min(position[0], width - glyph.width))
+            gy = max(0, min(position[1], height - glyph.height))
+            layer.alpha_composite(glyph, (gx, gy))
             x += char_w; cursor += 1
 
     frame.alpha_composite(layer)
