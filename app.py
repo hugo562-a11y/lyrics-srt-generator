@@ -1645,7 +1645,7 @@ class LyricsSrtApp(tk.Tk):
         if target_height is None:
             _, target_height = PNG_ASPECTS[self.png_aspect_var.get()]
         base_font = int(self.subtitle_font_size_var.get())
-        scaled_font = max(16, int(base_font * (target_height / 720.0)))
+        scaled_font = max(8, int(base_font * (target_height / 720.0)))
         return SubtitleStyle(
             font_size=scaled_font,
             text_color=self._hex_to_rgb(self.subtitle_text_color),

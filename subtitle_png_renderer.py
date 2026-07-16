@@ -74,8 +74,8 @@ def _fit_lines(text: str, font_path: Path, max_width: int, size: int, max_lines:
     def _line_width(f: "ImageFont.FreeTypeFont", t: str) -> float:
         return sum(f.getlength(ch) for ch in t)
 
-    best_lines, best_font = [text], ImageFont.truetype(str(font_path), max(24, size), index=0)
-    while size >= 20:
+    best_lines, best_font = [text], ImageFont.truetype(str(font_path), max(8, size), index=0)
+    while size >= 8:
         font = ImageFont.truetype(str(font_path), size, index=0)
         if _line_width(font, text) <= max_width:
             return [text], font
