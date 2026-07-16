@@ -965,7 +965,6 @@ class LyricsSrtApp(tk.Tk):
 
     def _ensure_dependencies(self) -> None:
         try:
-            # 啟動與分析可能同時觸發；整個應用程式生命週期只檢查／安裝一次。
             with self._dependency_lock:
                 if self.dependencies_ready.is_set():
                     return
@@ -973,7 +972,8 @@ class LyricsSrtApp(tk.Tk):
                 self.dependencies_ready.set()
             self.events.put(("ready", None))
         except Exception as exc:
-            self.events.put(("dependency_error", str(exc)))
+            self.events.put(("status", f"套件安裝異常（不影響核心功能）：{exc}"))
+            self.dependencies_ready.set()
 
     def import_audio(self) -> None:
         selected = filedialog.askopenfilename(title="選擇音檔", filetypes=SUPPORTED_AUDIO)
@@ -1219,7 +1219,9 @@ class LyricsSrtApp(tk.Tk):
 
     def _separate_vocals(self, path: Path) -> tuple[Path, Path | None]:
         """用 Demucs 建立人聲軌；回傳暫存目錄供呼叫端清理。"""
-        ensure_optional_package("demucs", "demucs>=4.0.1", lambda text: self.events.put(("status", text)))
+        ok = ensure_optional_package("demucs", "demucs>=4.0.1", lambda text: self.events.put(("status", text)))
+        if not ok:
+            raise RuntimeError("Demucs 安裝失敗，無法分離人聲。")
         from demucs.separate import main as demucs_main
         output_dir = Path(tempfile.mkdtemp(prefix="lyrics_srt_demucs_"))
         self.events.put(("status", "正在分離人聲與伴奏，首次使用會下載 Demucs 模型…"))
@@ -1266,7 +1268,9 @@ class LyricsSrtApp(tk.Tk):
             if reference and force_align:
                 try:
                     self.events.put(("status", "正在安裝 whisperx 強制對齊套件（首次較久）…"))
-                    ensure_optional_package("whisperx", "whisperx>=3.3.0", lambda text: self.events.put(("status", text)))
+                    ok = ensure_optional_package("whisperx", "whisperx>=3.3.0", lambda text: self.events.put(("status", text)))
+                    if not ok:
+                        raise RuntimeError("whisperx 安裝失敗")
                     import whisperx
                     lang_code = None if language == "auto" else language
                     wx_device = "cuda" if use_gpu else "cpu"
@@ -1328,9 +1332,6 @@ class LyricsSrtApp(tk.Tk):
                 event, payload = self.events.get_nowait()
                 if event == "status": self._set_progress_status(str(payload))
                 elif event == "ready": self._set_progress_status("必要套件已安裝，這次啟動不會再檢查或下載。", busy=False)
-                elif event == "dependency_error":
-                    self._set_progress_status("必要套件安裝失敗", busy=False)
-                    messagebox.showerror(APP_TITLE, f"無法完成自動安裝：\n{payload}")
                 elif event == "audio_ready":
                     self._ffplay = str(payload)
                     self.play_btn.configure(state="normal")

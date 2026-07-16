@@ -17,18 +17,25 @@ REQUIRED_PACKAGES = {
     "numpy": "numpy>=1.26.0",
     "PIL": "Pillow>=10.0.0",
     "requests": "requests>=2.31.0",
+    "demucs": "demucs>=4.0.1",
+}
+OPTIONAL_PACKAGES = {
+    "whisperx": "whisperx>=3.3.0",
 }
 GPU_PACKAGES = ("nvidia-cublas-cu12", "nvidia-cudnn-cu12")
 Status = Callable[[str], None]
 
 
-def _pip_install(packages: list[str], status: Status) -> None:
+def _pip_install(packages: list[str], status: Status) -> bool:
+    """安裝套件，回傳 True 表示成功、False 表示失敗（不丟擲例外）。"""
     status("正在下載必要套件：" + ", ".join(packages))
     command = [sys.executable, "-m", "pip", "install", "--upgrade", *packages]
     result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     if result.returncode:
-        tail = result.stdout[-1600:]
-        raise RuntimeError(f"套件安裝失敗。請確認網路連線後重試。\n\n{tail}")
+        tail = result.stdout[-800:] if result.stdout else ""
+        status(f"套件安裝失敗（{packages[0]}），將在下次啟動時重試。")
+        return False
+    return True
 
 
 def ensure_required_packages(status: Status) -> None:
@@ -36,13 +43,17 @@ def ensure_required_packages(status: Status) -> None:
     missing = [spec for module, spec in REQUIRED_PACKAGES.items() if importlib.util.find_spec(module) is None]
     if missing:
         _pip_install(missing, status)
+    missing_opt = [spec for module, spec in OPTIONAL_PACKAGES.items() if importlib.util.find_spec(module) is None]
+    if missing_opt:
+        _pip_install(missing_opt, status)
     status("必要套件已就緒。")
 
 
-def ensure_optional_package(module: str, package: str, status: Status) -> None:
-    """僅在使用者啟用選用功能時才下載對應套件。"""
+def ensure_optional_package(module: str, package: str, status: Status) -> bool:
+    """僅在使用者啟用選用功能時才下載對應套件；回傳是否成功。"""
     if importlib.util.find_spec(module) is None:
-        _pip_install([package], status)
+        return _pip_install([package], status)
+    return True
 
 
 def add_nvidia_dll_paths() -> bool:
