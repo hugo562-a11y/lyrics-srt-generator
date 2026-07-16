@@ -18,7 +18,7 @@ from pathlib import Path
 from tkinter import colorchooser, filedialog, messagebox, ttk
 from typing import Iterable
 
-from bootstrap import add_nvidia_dll_paths, ensure_optional_package, ensure_required_packages, gpu_runtime_ready, install_gpu_runtime
+from bootstrap import add_nvidia_dll_paths, check_ffmpeg, ensure_optional_package, ensure_required_packages, gpu_runtime_ready, install_gpu_runtime
 from subtitle_png_renderer import ANIMATION_STYLES
 from prompts import PROMPT_STYLE_MAP as PROMPT_STYLES
 
@@ -1941,35 +1941,34 @@ if __name__ == "__main__":
     import threading as _th
 
     def _install_splash() -> None:
-        """顯示安裝等待視窗，完成後自動關閉。"""
+        """顯示安裝等待視窗，所有套件裝完+驗證通過才關閉。"""
         splash = tk.Tk()
         splash.title("正在準備環境")
-        splash.geometry("420x140")
+        splash.geometry("460x160")
         splash.resizable(False, False)
         splash.configure(bg="#1e1e2e")
         splash.protocol("WM_DELETE_WINDOW", lambda: None)
         ttk.Label(splash, text="正在檢查並安裝必要套件…", background="#1e1e2e", foreground="#cdd6f4",
-                  font=("Microsoft JhengHei UI", 12)).pack(pady=(24, 8))
-        status_var = tk.StringVar(value="正在掃描…")
+                  font=("Microsoft JhengHei UI", 12)).pack(pady=(20, 8))
+        status_var = tk.StringVar(value="正在掃描環境…")
         status_lbl = ttk.Label(splash, textvariable=status_var, background="#1e1e2e", foreground="#a6adc8",
-                               font=("Microsoft JhengHei UI", 9))
+                               font=("Microsoft JhengHei UI", 9), wraplength=420)
         status_lbl.pack()
-        bar = ttk.Progressbar(splash, mode="indeterminate", length=300)
-        bar.pack(pady=12)
+        bar = ttk.Progressbar(splash, mode="indeterminate", length=360)
+        bar.pack(pady=10)
         bar.start(10)
-        _result: list[bool] = [False]
 
         def _do_install() -> None:
             try:
                 ensure_required_packages(lambda t: splash.after(0, status_var.set, t))
-                _result[0] = True
-            except Exception:
-                _result[0] = True
+                check_ffmpeg(lambda t: splash.after(0, status_var.set, t))
+            except Exception as exc:
+                splash.after(0, status_var.set, f"安裝過程異常：{exc}")
+                import time as _t; _t.sleep(2)
             splash.after(0, splash.destroy)
 
         _th.Thread(target=_do_install, daemon=True).start()
         splash.mainloop()
-        return
 
     _install_splash()
     LyricsSrtApp().mainloop()
