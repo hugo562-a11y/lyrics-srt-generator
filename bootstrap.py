@@ -22,8 +22,7 @@ ALL_PACKAGES: list[tuple[str, str, bool]] = [
     ("soundfile",      "soundfile>=0.12.1",       False),
     ("requests",       "requests>=2.31.0",        False),
     ("faster_whisper", "faster-whisper>=1.1.0",   False),
-    ("demucs",         "demucs>=4.0.1",           False),
-    ("torch",          "torch>=2.1.0",            True),
+    ("demucs",         "demucs>=4.0.1",           True),
     ("whisperx",       "whisperx>=3.3.0",         True),
 ]
 

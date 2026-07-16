@@ -1219,10 +1219,6 @@ class LyricsSrtApp(tk.Tk):
 
     def _separate_vocals(self, path: Path) -> tuple[Path, Path | None]:
         """用 Demucs 建立人聲軌；回傳暫存目錄供呼叫端清理。"""
-        self.events.put(("status", "正在安裝 PyTorch（torch）依賴…"))
-        ok = ensure_optional_package("torch", "torch>=2.1.0", lambda text: self.events.put(("status", text)))
-        if not ok:
-            raise RuntimeError("PyTorch 安裝失敗，無法分離人聲。")
         ok = ensure_optional_package("demucs", "demucs>=4.0.1", lambda text: self.events.put(("status", text)))
         if not ok:
             raise RuntimeError("Demucs 安裝失敗，無法分離人聲。")
@@ -1271,10 +1267,7 @@ class LyricsSrtApp(tk.Tk):
             wx_failed = False
             if reference and force_align:
                 try:
-                    self.events.put(("status", "正在安裝 PyTorch（torch）與 whisperx 強制對齊套件（首次較久）…"))
-                    ok = ensure_optional_package("torch", "torch>=2.1.0", lambda text: self.events.put(("status", text)))
-                    if not ok:
-                        raise RuntimeError("PyTorch 安裝失敗")
+                    self.events.put(("status", "正在安裝 whisperx 強制對齊套件（首次較久）…"))
                     ok = ensure_optional_package("whisperx", "whisperx>=3.3.0", lambda text: self.events.put(("status", text)))
                     if not ok:
                         raise RuntimeError("whisperx 安裝失敗")
