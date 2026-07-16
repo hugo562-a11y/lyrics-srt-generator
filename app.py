@@ -1236,6 +1236,10 @@ class LyricsSrtApp(tk.Tk):
         temporary_dir: Path | None = None
         try:
             self._ensure_dependencies()
+            self.events.put(("status", "正在確認 PyTorch（torch）…"))
+            ok = ensure_optional_package("torch", "torch>=2.1.0", lambda text: self.events.put(("status", text)))
+            if not ok:
+                raise RuntimeError("PyTorch 安裝失敗，無法進行 AI 分析。")
             from faster_whisper import WhisperModel
             self.events.put(("status", "正在以本機 Whisper 分析音檔…"))
             use_gpu = device_choice != "CPU"
