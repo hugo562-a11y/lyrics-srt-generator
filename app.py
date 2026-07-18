@@ -1311,8 +1311,11 @@ class LyricsSrtApp(tk.Tk):
                             raise RuntimeError(f"whisperx 強制對齊失敗：\n{wx_proc.stdout[-1200:]}")
                         wx_words = json.loads(wx_output.read_text(encoding="utf-8"))["words"]
                     finally:
-                        wx_input.unlink(missing_ok=True)
-                        wx_output.unlink(missing_ok=True)
+                        for temp_file in (wx_input, wx_output):
+                            try:
+                                temp_file.unlink(missing_ok=True)
+                            except OSError:
+                                pass
                     recognized = [Segment(float(w["start"]), float(w["end"]), LYRIC_KIND, str(w["text"])) for w in wx_words]
                     if intro_filter and vocal_onset >= min_gap:
                         recognized = [item for item in recognized if item.end > vocal_onset - 0.08]

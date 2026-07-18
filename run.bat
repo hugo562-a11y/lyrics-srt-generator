@@ -4,7 +4,12 @@ cd /d "%~dp0"
 
 where py >nul 2>&1
 if %errorlevel% equ 0 (
-    py -3 app.py
+    py -3.10 -c "" >nul 2>&1
+    if %errorlevel% equ 0 (
+        py -3.10 app.py
+    ) else (
+        py -3 app.py
+    )
     goto :check
 )
 where python >nul 2>&1

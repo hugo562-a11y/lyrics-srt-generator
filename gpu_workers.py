@@ -29,8 +29,8 @@ def _run_whisperx(input_path: str, output_path: str) -> None:
     temperature = payload["temperature"]
     compute_type = "float16" if device == "cuda" else "int8"
 
-    model = whisperx.load_model(model_name, device=device, compute_type=compute_type, language=lang_code)
-    result = model.transcribe(source_path, batch_size=16, language=lang_code, temperature=temperature)
+    model = whisperx.load_model(model_name, device=device, compute_type=compute_type, language=lang_code, asr_options={"temperatures": [temperature]})
+    result = model.transcribe(source_path, batch_size=16, language=lang_code)
     align_lang = result.get("language", lang_code) or "zh"
     align_model, metadata = whisperx.load_align_model(language_code=align_lang, device=device)
     aligned = whisperx.align(result["segments"], align_model, metadata, source_path, device=device)
