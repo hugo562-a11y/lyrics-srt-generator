@@ -119,7 +119,18 @@ def check_ffmpeg(status: Status) -> bool:
 
 
 # ── CUDA ──────────────────────────────────────────────────────────
+_NVIDIA_DLL_DIR_NAMES = ("cublas", "cudnn")
+
+
 def add_nvidia_dll_paths() -> bool:
+    """讓 ctranslate2 找得到 nvidia-cublas-cu12／nvidia-cudnn-cu12 的 DLL。
+
+    必須寫進 os.environ["PATH"]：ctranslate2 載入 cublas64_12.dll 用的是不吃
+    os.add_dll_directory() 登記結果的載入方式，只有 PATH 有效。副作用是 PATH
+    會被 subprocess 繼承——這正是 Demucs／whisperx 的獨立子行程
+    （gpu_workers.py）又混到不同版本 cuDNN 的原因，因此那兩處呼叫
+    subprocess.run() 時，需要用 clean_subprocess_env() 把這段路徑濾掉。
+    """
     candidates: list[Path] = []
     for root in map(Path, sys.path):
         nvidia = root / "nvidia"
@@ -136,6 +147,24 @@ def add_nvidia_dll_paths() -> bool:
             if hasattr(os, "add_dll_directory"):
                 os.add_dll_directory(str(directory))
     return found
+
+
+def clean_subprocess_env() -> dict[str, str]:
+    """給需要用到 torch 的子行程（gpu_workers.py）用的環境變數。
+
+    濾掉 add_nvidia_dll_paths() 寫進 PATH 的 .../nvidia/cublas/bin、
+    .../nvidia/cudnn/bin，避免子行程裡的 torch 也載入 nvidia-cudnn-cu12 的
+    cuDNN，跟自己內建的版本衝突（CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH）。
+    """
+    env = dict(os.environ)
+    kept = []
+    for part in env.get("PATH", "").split(os.pathsep):
+        segs = [s.lower() for s in Path(part).parts] if part else []
+        if len(segs) >= 3 and segs[-1] == "bin" and segs[-3] == "nvidia" and segs[-2] in _NVIDIA_DLL_DIR_NAMES:
+            continue
+        kept.append(part)
+    env["PATH"] = os.pathsep.join(kept)
+    return env
 
 
 def install_gpu_runtime(status: Status) -> None:

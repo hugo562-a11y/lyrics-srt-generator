@@ -19,7 +19,7 @@ from pathlib import Path
 from tkinter import colorchooser, filedialog, messagebox, ttk
 from typing import Iterable
 
-from bootstrap import add_nvidia_dll_paths, block_conflicting_torch, check_ffmpeg, ensure_optional_package, ensure_required_packages, gpu_runtime_ready, install_gpu_runtime
+from bootstrap import add_nvidia_dll_paths, block_conflicting_torch, check_ffmpeg, clean_subprocess_env, ensure_optional_package, ensure_required_packages, gpu_runtime_ready, install_gpu_runtime
 
 block_conflicting_torch()
 from subtitle_png_renderer import ANIMATION_STYLES
@@ -1229,7 +1229,7 @@ class LyricsSrtApp(tk.Tk):
         self.events.put(("status", "正在分離人聲與伴奏，首次使用會下載 Demucs 模型…"))
         worker = Path(__file__).with_name("gpu_workers.py")
         args = [sys.executable, str(worker), "demucs", "--two-stems", "vocals", "-n", "htdemucs", "-o", str(output_dir), str(path)]
-        result = subprocess.run(args, text=True, encoding="utf-8", errors="replace", stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        result = subprocess.run(args, text=True, encoding="utf-8", errors="replace", stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=clean_subprocess_env(), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         if result.returncode:
             shutil.rmtree(output_dir, ignore_errors=True)
             raise RuntimeError(f"人聲分離失敗：\n{result.stdout[-1200:]}")
@@ -1296,6 +1296,7 @@ class LyricsSrtApp(tk.Tk):
                             [sys.executable, str(worker), "whisperx", str(wx_input), str(wx_output)],
                             text=True, encoding="utf-8", errors="replace",
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            env=clean_subprocess_env(),
                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                         )
                         if wx_proc.returncode:
