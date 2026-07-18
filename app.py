@@ -1316,12 +1316,12 @@ class LyricsSrtApp(tk.Tk):
             if not lyrics:
                 if reference and intro_filter:
                     self.events.put(("status", "正在辨識前奏結束與第一句人聲位置…"))
-                    onset_raw, _ = model.transcribe(str(source_path), language=None if language == "auto" else language, vad_filter=True, condition_on_previous_text=False, beam_size=5, initial_prompt=prompt_text or None)
+                    onset_raw, _ = model.transcribe(str(source_path), language=None if language == "auto" else language, vad_filter=True, condition_on_previous_text=False, beam_size=5)
                     onset_segments = normalize_lyrics(list(onset_raw))
                     if onset_segments:
                         vocal_onset = onset_segments[0].start
                 self.events.put(("status", "正在分析音訊與逐字時間點，請稍候…"))
-                raw, _ = model.transcribe(str(source_path), language=None if language == "auto" else language, vad_filter=not bool(reference), condition_on_previous_text=False, beam_size=5, word_timestamps=precise, initial_prompt=prompt_text or None)
+                raw, _ = model.transcribe(str(source_path), language=None if language == "auto" else language, vad_filter=not bool(reference), condition_on_previous_text=False, beam_size=5, word_timestamps=precise)
                 raw_segments = list(raw)
                 recognized = word_timing_anchors(raw_segments) if precise else normalize_lyrics(raw_segments)
                 if intro_filter and vocal_onset >= min_gap:
