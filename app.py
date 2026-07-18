@@ -609,6 +609,8 @@ class LyricsSrtApp(tk.Tk):
         self.subtitle_offset_y_var = tk.DoubleVar(value=0.0)
         self.anim_intensity_var = tk.DoubleVar(value=1.0)
         self.anim_speed_var = tk.DoubleVar(value=1.0)
+        self.letter_spacing_var = tk.DoubleVar(value=0.0)
+        self.outline_scale_var = tk.DoubleVar(value=1.0)
         self.preview_zoom_var = tk.DoubleVar(value=1.0)
         
         # 初始化可用的中英文字型映射（從 Windows 註冊表掃描所有已安裝的字型）
@@ -890,8 +892,14 @@ class LyricsSrtApp(tk.Tk):
         ttk.Scale(style_frame, from_=0.0, to=3.0, variable=self.anim_intensity_var, length=80, command=lambda _v: self._refresh_preview()).grid(row=r, column=1, columnspan=2, sticky="ew")
         ttk.Label(style_frame, text="速度").grid(row=r, column=3, sticky="w", padx=(12, 4))
         ttk.Scale(style_frame, from_=0.2, to=3.0, variable=self.anim_speed_var, length=80, command=lambda _v: self._refresh_preview()).grid(row=r, column=4, columnspan=2, sticky="ew")
- 
+
         r = 4
+        ttk.Label(style_frame, text="字距").grid(row=r, column=0, sticky="w", padx=(0, 4))
+        ttk.Scale(style_frame, from_=-10.0, to=40.0, variable=self.letter_spacing_var, length=80, command=lambda _v: self._refresh_preview()).grid(row=r, column=1, columnspan=2, sticky="ew")
+        ttk.Label(style_frame, text="邊框").grid(row=r, column=3, sticky="w", padx=(12, 4))
+        ttk.Scale(style_frame, from_=0.0, to=3.0, variable=self.outline_scale_var, length=80, command=lambda _v: self._refresh_preview()).grid(row=r, column=4, columnspan=2, sticky="ew")
+
+        r = 5
         ttk.Label(style_frame, text="字型").grid(row=r, column=0, sticky="w", padx=(0, 4), pady=(4, 0))
         self.font_combo = ttk.Combobox(style_frame, textvariable=self.subtitle_font_name_var, state="readonly", width=14)
         self.font_combo.grid(row=r, column=1, columnspan=3, sticky="ew", pady=(4, 0))
@@ -1537,6 +1545,8 @@ class LyricsSrtApp(tk.Tk):
                 "offset_y": self.subtitle_offset_y_var.get(),
                 "anim_intensity": self.anim_intensity_var.get(),
                 "anim_speed": self.anim_speed_var.get(),
+                "letter_spacing": self.letter_spacing_var.get(),
+                "outline_scale": self.outline_scale_var.get(),
                 "model": self.model_var.get(),
                 "language": self.language_var.get(),
                 "device": self.device_var.get(),
@@ -1596,6 +1606,8 @@ class LyricsSrtApp(tk.Tk):
             if "offset_y" in s: self.subtitle_offset_y_var.set(float(s["offset_y"]))
             if "anim_intensity" in s: self.anim_intensity_var.set(float(s["anim_intensity"]))
             if "anim_speed" in s: self.anim_speed_var.set(float(s["anim_speed"]))
+            if "letter_spacing" in s: self.letter_spacing_var.set(float(s["letter_spacing"]))
+            if "outline_scale" in s: self.outline_scale_var.set(float(s["outline_scale"]))
             if "model" in s: self.model_var.set(s["model"])
             if "language" in s: self.language_var.set(s["language"])
             if "device" in s: self.device_var.set(s["device"])
@@ -1623,9 +1635,8 @@ class LyricsSrtApp(tk.Tk):
         width, height = PNG_ASPECTS[self.png_aspect_var.get()]
         stem = self.audio_path.stem if self.audio_path else "lyrics"
         output = Path(parent) / f"{stem}_動態字幕PNG_{width}x{height}_30fps"
-        if output.exists() and any(output.iterdir()):
-            messagebox.showerror(APP_TITLE, f"輸出資料夾已存在且不是空的：\n{output}\n\n請選擇其他位置，避免覆蓋既有影格。")
-            return
+        if output.exists():
+            shutil.rmtree(output, ignore_errors=True)
         self.png_export_btn.configure(state="disabled")
         self._set_progress_status("正在準備動態字幕 PNG 匯出…", busy=True)
         # 複製時間軸資料，讓輸出期間仍可安全操作或繼續校正 UI。
@@ -1656,7 +1667,8 @@ class LyricsSrtApp(tk.Tk):
         if target_height is None:
             _, target_height = PNG_ASPECTS[self.png_aspect_var.get()]
         base_font = int(self.subtitle_font_size_var.get())
-        scaled_font = max(8, int(base_font * (target_height / 720.0)))
+        scale = target_height / 720.0
+        scaled_font = max(8, int(base_font * scale))
         return SubtitleStyle(
             font_size=scaled_font,
             text_color=self._hex_to_rgb(self.subtitle_text_color),
@@ -1668,6 +1680,8 @@ class LyricsSrtApp(tk.Tk):
             anim_intensity=self.anim_intensity_var.get(),
             anim_speed=self.anim_speed_var.get(),
             font_path=self.font_paths.get(self.subtitle_font_name_var.get(), ""),
+            letter_spacing=self.letter_spacing_var.get() * scale,
+            outline_scale=self.outline_scale_var.get(),
         )
 
     def _browse_font(self) -> None:

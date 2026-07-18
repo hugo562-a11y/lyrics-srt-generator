@@ -33,6 +33,8 @@ class SubtitleStyle:
     anim_intensity: float = 1.0
     anim_speed: float = 1.0
     font_path: str = ""
+    letter_spacing: float = 0.0
+    outline_scale: float = 1.0
 
 
 DEFAULT_STYLE = SubtitleStyle()
@@ -68,11 +70,11 @@ def _energy(audio_path: Path | None, fps: int, frames: int) -> list[float]:
     return [min(1.0, values[min(i, len(values) - 1)] / peak) if values else 0.0 for i in range(frames)]
 
 
-def _fit_lines(text: str, font_path: Path, max_width: int, size: int, max_lines: int = 4) -> tuple[list[str], "ImageFont.FreeTypeFont"]:
+def _fit_lines(text: str, font_path: Path, max_width: int, size: int, max_lines: int = 4, letter_spacing: float = 0.0) -> tuple[list[str], "ImageFont.FreeTypeFont"]:
     from PIL import ImageFont
 
     def _line_width(f: "ImageFont.FreeTypeFont", t: str) -> float:
-        return sum(f.getlength(ch) for ch in t)
+        return sum(f.getlength(ch) for ch in t) + letter_spacing * max(0, len(t) - 1)
 
     best_lines, best_font = [text], ImageFont.truetype(str(font_path), max(8, size), index=0)
     while size >= 8:
@@ -97,7 +99,8 @@ def _draw(frame: "Image.Image", item: object, now: float, energy: float, width: 
     from PIL import Image, ImageDraw, ImageFilter, ImageFont
     text, start, end = item.text, item.start, item.end
     font_path = Path(subtitle_style.font_path) if subtitle_style.font_path and Path(subtitle_style.font_path).exists() else _font_path()
-    lines, font = _fit_lines(text, font_path, max(200, int(width * 0.80) - 80), subtitle_style.font_size)
+    letter_spacing = subtitle_style.letter_spacing
+    lines, font = _fit_lines(text, font_path, max(200, int(width * 0.80) - 80), subtitle_style.font_size, letter_spacing=letter_spacing)
     local, duration = now - start, end - start
     intensity = subtitle_style.anim_intensity
     speed = subtitle_style.anim_speed
@@ -114,7 +117,7 @@ def _draw(frame: "Image.Image", item: object, now: float, energy: float, width: 
 
     if len(lines) > max_lines:
         safe_size = max(16, int(font.size * max_lines / len(lines)))
-        lines, font = _fit_lines(text, font_path, max(200, int(width * 0.80) - 80), safe_size, max_lines=max_lines)
+        lines, font = _fit_lines(text, font_path, max(200, int(width * 0.80) - 80), safe_size, max_lines=max_lines, letter_spacing=letter_spacing)
 
     line_h = int(font.size * line_h_ratio)
     block_h = line_h * len(lines)
@@ -136,7 +139,7 @@ def _draw(frame: "Image.Image", item: object, now: float, energy: float, width: 
 
     for line_no, line in enumerate(lines):
         widths = [font.getlength(ch) for ch in line]
-        line_w = sum(widths)
+        line_w = sum(widths) + letter_spacing * max(0, len(line) - 1)
         if subtitle_style.halign == "left":
             x = margin_x
         elif subtitle_style.halign == "right":
@@ -148,7 +151,7 @@ def _draw(frame: "Image.Image", item: object, now: float, energy: float, width: 
 
         for char_i, (char, char_w) in enumerate(zip(line, widths)):
             if char == " ":
-                x += char_w; continue
+                x += char_w + letter_spacing; continue
 
             char_progress = cursor / chars
             progress = (local - karaoke * char_progress) / (.12 / speed)
@@ -312,6 +315,7 @@ def _draw(frame: "Image.Image", item: object, now: float, energy: float, width: 
             top_y = base_top + int((1 - enter) * motion - (1 - leave) * height * .018) + int(subtitle_style.offset_y * height)
             draw_y = top_y + line_no * line_h + extra_y
 
+            stroke_w = max(0, int(stroke_w * subtitle_style.outline_scale))
             glyph = Image.new("RGBA", (int(char_w + 80), font.size + 100), (0, 0, 0, 0))
             gd = ImageDraw.Draw(glyph)
             gd.text((40, 30), char, font=font, fill=(*subtitle_style.text_color, alpha), stroke_width=stroke_w, stroke_fill=(*subtitle_style.outline_color, int(alpha * .9)))
@@ -343,7 +347,7 @@ def _draw(frame: "Image.Image", item: object, now: float, energy: float, width: 
                 position = (int(x - 40 + extra_x), int(draw_y + 10))
 
             layer.alpha_composite(glyph, position)
-            x += char_w; cursor += 1
+            x += char_w + letter_spacing; cursor += 1
 
     frame.alpha_composite(layer)
 
