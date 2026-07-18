@@ -18,7 +18,7 @@ from pathlib import Path
 from tkinter import colorchooser, filedialog, messagebox, ttk
 from typing import Iterable
 
-from bootstrap import add_nvidia_dll_paths, ensure_optional_package, ensure_required_packages, gpu_runtime_ready, install_gpu_runtime
+from bootstrap import add_nvidia_dll_paths, check_ffmpeg, ensure_optional_package, ensure_required_packages, gpu_runtime_ready, install_gpu_runtime
 from subtitle_png_renderer import ANIMATION_STYLES
 from prompts import PROMPT_STYLE_MAP as PROMPT_STYLES
 
@@ -965,7 +965,6 @@ class LyricsSrtApp(tk.Tk):
 
     def _ensure_dependencies(self) -> None:
         try:
-            # 啟動與分析可能同時觸發；整個應用程式生命週期只檢查／安裝一次。
             with self._dependency_lock:
                 if self.dependencies_ready.is_set():
                     return
@@ -973,7 +972,8 @@ class LyricsSrtApp(tk.Tk):
                 self.dependencies_ready.set()
             self.events.put(("ready", None))
         except Exception as exc:
-            self.events.put(("dependency_error", str(exc)))
+            self.events.put(("status", f"套件安裝異常（不影響核心功能）：{exc}"))
+            self.dependencies_ready.set()
 
     def import_audio(self) -> None:
         selected = filedialog.askopenfilename(title="選擇音檔", filetypes=SUPPORTED_AUDIO)
@@ -1219,7 +1219,9 @@ class LyricsSrtApp(tk.Tk):
 
     def _separate_vocals(self, path: Path) -> tuple[Path, Path | None]:
         """用 Demucs 建立人聲軌；回傳暫存目錄供呼叫端清理。"""
-        ensure_optional_package("demucs", "demucs>=4.0.1", lambda text: self.events.put(("status", text)))
+        ok = ensure_optional_package("demucs", "demucs>=4.0.1", lambda text: self.events.put(("status", text)))
+        if not ok:
+            raise RuntimeError("Demucs 安裝失敗，無法分離人聲。")
         from demucs.separate import main as demucs_main
         output_dir = Path(tempfile.mkdtemp(prefix="lyrics_srt_demucs_"))
         self.events.put(("status", "正在分離人聲與伴奏，首次使用會下載 Demucs 模型…"))
@@ -1266,7 +1268,9 @@ class LyricsSrtApp(tk.Tk):
             if reference and force_align:
                 try:
                     self.events.put(("status", "正在安裝 whisperx 強制對齊套件（首次較久）…"))
-                    ensure_optional_package("whisperx", "whisperx>=3.3.0", lambda text: self.events.put(("status", text)))
+                    ok = ensure_optional_package("whisperx", "whisperx>=3.3.0", lambda text: self.events.put(("status", text)))
+                    if not ok:
+                        raise RuntimeError("whisperx 安裝失敗")
                     import whisperx
                     lang_code = None if language == "auto" else language
                     wx_device = "cuda" if use_gpu else "cpu"
@@ -1328,9 +1332,6 @@ class LyricsSrtApp(tk.Tk):
                 event, payload = self.events.get_nowait()
                 if event == "status": self._set_progress_status(str(payload))
                 elif event == "ready": self._set_progress_status("必要套件已安裝，這次啟動不會再檢查或下載。", busy=False)
-                elif event == "dependency_error":
-                    self._set_progress_status("必要套件安裝失敗", busy=False)
-                    messagebox.showerror(APP_TITLE, f"無法完成自動安裝：\n{payload}")
                 elif event == "audio_ready":
                     self._ffplay = str(payload)
                     self.play_btn.configure(state="normal")
@@ -1644,8 +1645,7 @@ class LyricsSrtApp(tk.Tk):
         if target_height is None:
             _, target_height = PNG_ASPECTS[self.png_aspect_var.get()]
         base_font = int(self.subtitle_font_size_var.get())
-        # Scale the font size relative to a reference height of 1080p.
-        scaled_font = max(12, int(base_font * (target_height / 1080.0)))
+        scaled_font = max(8, int(base_font * (target_height / 720.0)))
         return SubtitleStyle(
             font_size=scaled_font,
             text_color=self._hex_to_rgb(self.subtitle_text_color),
@@ -1937,4 +1937,37 @@ class LyricsSrtApp(tk.Tk):
 
 
 if __name__ == "__main__":
+    import threading as _th
+
+    def _install_splash() -> None:
+        """顯示安裝等待視窗，所有套件裝完+驗證通過才關閉。"""
+        splash = tk.Tk()
+        splash.title("正在準備環境")
+        splash.geometry("460x160")
+        splash.resizable(False, False)
+        splash.configure(bg="#1e1e2e")
+        splash.protocol("WM_DELETE_WINDOW", lambda: None)
+        ttk.Label(splash, text="正在檢查並安裝必要套件…", background="#1e1e2e", foreground="#cdd6f4",
+                  font=("Microsoft JhengHei UI", 12)).pack(pady=(20, 8))
+        status_var = tk.StringVar(value="正在掃描環境…")
+        status_lbl = ttk.Label(splash, textvariable=status_var, background="#1e1e2e", foreground="#a6adc8",
+                               font=("Microsoft JhengHei UI", 9), wraplength=420)
+        status_lbl.pack()
+        bar = ttk.Progressbar(splash, mode="indeterminate", length=360)
+        bar.pack(pady=10)
+        bar.start(10)
+
+        def _do_install() -> None:
+            try:
+                ensure_required_packages(lambda t: splash.after(0, status_var.set, t))
+                check_ffmpeg(lambda t: splash.after(0, status_var.set, t))
+            except Exception as exc:
+                splash.after(0, status_var.set, f"安裝過程異常：{exc}")
+                import time as _t; _t.sleep(2)
+            splash.after(0, splash.destroy)
+
+        _th.Thread(target=_do_install, daemon=True).start()
+        splash.mainloop()
+
+    _install_splash()
     LyricsSrtApp().mainloop()

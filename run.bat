@@ -1,14 +1,28 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-if not exist ".venv\Scripts\python.exe" (
-  echo First launch: creating a private Python environment...
-  py -3 -m venv .venv || goto :error
+
+where py >nul 2>&1
+if %errorlevel% equ 0 (
+    py -3 app.py
+    goto :check
 )
-".venv\Scripts\python.exe" app.py
-if errorlevel 1 goto :error
+where python >nul 2>&1
+if %errorlevel% equ 0 (
+    python app.py
+    goto :check
+)
+goto :no_python
+
+:check
+if %errorlevel% neq 0 goto :no_python
 exit /b 0
-:error
+
+:no_python
 echo.
-echo The app could not start. Install Python 3.10+ from python.org, then try again.
+echo ============================================
+echo  找不到 Python，請先安裝 Python 3.10+
+echo  下載網址：https://www.python.org/downloads/
+echo  安裝時請勾選 "Add Python to PATH"
+echo ============================================
 pause

@@ -1,11 +1,11 @@
-faster-whisper>=1.1.0
-soundfile>=0.12.1
+# 核心套件（啟動時自動安裝）
 numpy>=1.26.0
 Pillow>=10.0.0
+soundfile>=0.12.1
+requests>=2.31.0
+faster-whisper>=1.1.0
+demucs>=4.0.1
 
-# Optional NVIDIA GPU acceleration is downloaded automatically only when needed:
-# nvidia-cublas-cu12
-# nvidia-cudnn-cu12
-
-# Optional forced alignment (more accurate timing, downloaded on demand):
-# whisperx>=3.3.0
+# 選用（AI 分析 / 強制對齊時自動安裝）
+torch>=2.1.0
+whisperx>=3.3.0
