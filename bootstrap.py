@@ -144,5 +144,36 @@ def install_gpu_runtime(status: Status) -> None:
 
 
 def gpu_runtime_ready() -> bool:
+    """檢查 nvidia-cublas-cu12／nvidia-cudnn-cu12 的 DLL 是否已安裝。
+
+    不能用 shutil.which() 判斷：.dll 不在 Windows PATHEXT 清單裡，即使目錄已在
+    PATH 上，which() 還是找不到，導致每次啟動都誤判成「未安裝」而重跑安裝。
+    """
     add_nvidia_dll_paths()
-    return bool(shutil.which("cublas64_12.dll") and shutil.which("cudnn64_9.dll"))
+    for root in map(Path, sys.path):
+        nvidia = root / "nvidia"
+        if (nvidia / "cublas" / "bin" / "cublas64_12.dll").is_file() and (nvidia / "cudnn" / "bin" / "cudnn64_9.dll").is_file():
+            return True
+    return False
+
+
+def block_conflicting_torch() -> None:
+    """讓本行程之後的 import torch 失敗，避免 ctranslate2 誤用 torch 內建的 cuDNN。
+
+    torch 的 Windows wheel 會在 import 時把自己那份 cudnn/cublas DLL 載進行程，
+    版本可能跟 nvidia-cudnn-cu12（faster-whisper／ctranslate2 GPU 推論實際用的
+    那份）不一致，導致轉錄途中出現 CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH。
+    ctranslate2 只在 model_spec.py 用 try/except 選用 torch（沒裝也能正常運作），
+    所以把它擋掉是安全的；真的需要 torch 的功能（Demucs 人聲分離／whisperx 強制
+    對齊）改在獨立子行程（見 gpu_workers.py）執行，不受影響。
+    """
+    if "torch" in sys.modules:
+        return
+
+    class _TorchBlocker:
+        def find_spec(self, name, path, target=None):
+            if name == "torch" or name.startswith("torch."):
+                raise ModuleNotFoundError(f"{name} is blocked in this process to avoid a cuDNN version conflict")
+            return None
+
+    sys.meta_path.insert(0, _TorchBlocker())

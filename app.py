@@ -9,6 +9,7 @@ import queue
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -18,7 +19,9 @@ from pathlib import Path
 from tkinter import colorchooser, filedialog, messagebox, ttk
 from typing import Iterable
 
-from bootstrap import add_nvidia_dll_paths, check_ffmpeg, ensure_optional_package, ensure_required_packages, gpu_runtime_ready, install_gpu_runtime
+from bootstrap import add_nvidia_dll_paths, block_conflicting_torch, check_ffmpeg, ensure_optional_package, ensure_required_packages, gpu_runtime_ready, install_gpu_runtime
+
+block_conflicting_torch()
 from subtitle_png_renderer import ANIMATION_STYLES
 from prompts import PROMPT_STYLE_MAP as PROMPT_STYLES
 
@@ -1222,10 +1225,14 @@ class LyricsSrtApp(tk.Tk):
         ok = ensure_optional_package("demucs", "demucs>=4.0.1", lambda text: self.events.put(("status", text)))
         if not ok:
             raise RuntimeError("Demucs 安裝失敗，無法分離人聲。")
-        from demucs.separate import main as demucs_main
         output_dir = Path(tempfile.mkdtemp(prefix="lyrics_srt_demucs_"))
         self.events.put(("status", "正在分離人聲與伴奏，首次使用會下載 Demucs 模型…"))
-        demucs_main(["--two-stems", "vocals", "-n", "htdemucs", "-o", str(output_dir), str(path)])
+        worker = Path(__file__).with_name("gpu_workers.py")
+        args = [sys.executable, str(worker), "demucs", "--two-stems", "vocals", "-n", "htdemucs", "-o", str(output_dir), str(path)]
+        result = subprocess.run(args, text=True, encoding="utf-8", errors="replace", stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if result.returncode:
+            shutil.rmtree(output_dir, ignore_errors=True)
+            raise RuntimeError(f"人聲分離失敗：\n{result.stdout[-1200:]}")
         vocal_path = output_dir / "htdemucs" / path.stem / "vocals.wav"
         if not vocal_path.exists():
             shutil.rmtree(output_dir, ignore_errors=True)
@@ -1271,30 +1278,33 @@ class LyricsSrtApp(tk.Tk):
                     ok = ensure_optional_package("whisperx", "whisperx>=3.3.0", lambda text: self.events.put(("status", text)))
                     if not ok:
                         raise RuntimeError("whisperx 安裝失敗")
-                    import whisperx
                     lang_code = None if language == "auto" else language
                     wx_device = "cuda" if use_gpu else "cpu"
-                    self.events.put(("status", "正在以 whisperx 轉錄音檔…"))
-                    wx_model = whisperx.load_model(model_name, device=wx_device, compute_type="float16" if wx_device == "cuda" else "int8", language=lang_code)
-                    wx_result = wx_model.transcribe(str(source_path), batch_size=16, language=lang_code, temperature=temperature)
-                    self.events.put(("status", "正在載入 CTC 對齊模型…"))
-                    align_lang = wx_result.get("language", lang_code) or "zh"
-                    wx_align_model, wx_metadata = whisperx.load_align_model(language_code=align_lang, device=wx_device)
-                    self.events.put(("status", "正在以 CTC 強制對齊取得精確時間點…"))
-                    wx_aligned = whisperx.align(wx_result["segments"], wx_align_model, wx_metadata, str(source_path), device=wx_device)
-                    recognized = []
-                    for seg in wx_aligned.get("segments", []):
-                        words = seg.get("words", [])
-                        for w in words:
-                            ws, we = w.get("start"), w.get("end")
-                            wt = str(w.get("word", "")).strip()
-                            if wt and ws is not None and we is not None and we > ws:
-                                recognized.append(Segment(float(ws), float(we), LYRIC_KIND, wt))
-                        if not words:
-                            text = str(seg.get("text", "")).strip()
-                            s, e = seg.get("start", 0), seg.get("end", 0)
-                            if text and e > s:
-                                recognized.append(Segment(float(s), float(e), LYRIC_KIND, text))
+                    self.events.put(("status", "正在以 whisperx 轉錄並強制對齊（獨立行程執行，避免 GPU 函式庫衝突）…"))
+                    wx_input = Path(tempfile.mkstemp(prefix="lyrics_srt_wx_in_", suffix=".json")[1])
+                    wx_output = Path(tempfile.mkstemp(prefix="lyrics_srt_wx_out_", suffix=".json")[1])
+                    try:
+                        wx_input.write_text(json.dumps({
+                            "source_path": str(source_path),
+                            "model_name": model_name,
+                            "language": lang_code,
+                            "device": wx_device,
+                            "temperature": temperature,
+                        }), encoding="utf-8")
+                        worker = Path(__file__).with_name("gpu_workers.py")
+                        wx_proc = subprocess.run(
+                            [sys.executable, str(worker), "whisperx", str(wx_input), str(wx_output)],
+                            text=True, encoding="utf-8", errors="replace",
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                        )
+                        if wx_proc.returncode:
+                            raise RuntimeError(f"whisperx 強制對齊失敗：\n{wx_proc.stdout[-1200:]}")
+                        wx_words = json.loads(wx_output.read_text(encoding="utf-8"))["words"]
+                    finally:
+                        wx_input.unlink(missing_ok=True)
+                        wx_output.unlink(missing_ok=True)
+                    recognized = [Segment(float(w["start"]), float(w["end"]), LYRIC_KIND, str(w["text"])) for w in wx_words]
                     if intro_filter and vocal_onset >= min_gap:
                         recognized = [item for item in recognized if item.end > vocal_onset - 0.08]
                     lyrics = align_reference_lyrics(reference, recognized, self.duration)
