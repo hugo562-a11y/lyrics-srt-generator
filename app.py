@@ -1434,11 +1434,13 @@ class LyricsSrtApp(tk.Tk):
                     else:
                         messagebox.showerror(APP_TITLE, f"API 連線失敗：\n{msg}")
                 elif event == "img_gen_done":
-                    output_dir, success, fail = payload
+                    output_dir, success, fail, first_err = payload
                     self._set_progress_status(f"影像生成完成：成功 {success} 張，失敗 {fail} 張", busy=False)
                     detail = f"已將 {success} 張歌詞影像儲存至：\n{output_dir}"
                     if fail:
                         detail += f"\n\n{fail} 張生成失敗，可重新執行補生成。"
+                        if first_err:
+                            detail += f"\n\n失敗原因：{first_err}"
                     messagebox.showinfo(APP_TITLE, detail)
                 elif event == "img_error":
                     self._set_progress_status("影像生成失敗", busy=False)
@@ -1929,7 +1931,8 @@ class LyricsSrtApp(tk.Tk):
                 results = gen.generate_batch(prompts, output_dir, on_progress=_prog, delay=1.5)
                 success = sum(1 for r in results if r.success)
                 fail = len(results) - success
-                self.events.put(("img_gen_done", (output_dir, success, fail)))
+                first_err = next((r.error for r in results if not r.success), "")
+                self.events.put(("img_gen_done", (output_dir, success, fail, first_err)))
             except Exception as exc:
                 self.events.put(("img_error", str(exc)))
         threading.Thread(target=_do, daemon=True).start()
