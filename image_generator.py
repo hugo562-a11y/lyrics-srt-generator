@@ -101,27 +101,29 @@ class ImageGenerator:
         return ImageGenResult(True, image_path=output_path)
 
     def _generate_gemini(self, prompt: str, output_path: Path) -> ImageGenResult:
-        # 用 Interactions API（Gemini 現行圖片生成介面）；舊版 imagen-3.0-generate-002
-        # 走 generateContent 端點會失敗，因為該模型只支援 :predict。
-        url = "https://generativelanguage.googleapis.com/v1beta/interactions"
-        headers = {"x-goog-api-key": self.api_key, "Content-Type": "application/json"}
+        model = "gemini-2.0-flash-preview-image-generation"
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+            f"?key={self.api_key}"
+        )
+        headers = {"Content-Type": "application/json"}
         body = {
-            "model": "gemini-3.1-flash-image",
-            "input": [{"type": "text", "text": prompt}],
-            "response_format": {"type": "image", "mime_type": "image/png"},
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"responseModalities": ["IMAGE", "TEXT"]},
         }
         resp = self._session.post(url, headers=headers, json=body, timeout=120)
         if resp.status_code != 200:
             return ImageGenResult(False, error=f"API 錯誤 ({resp.status_code}): {resp.text[:300]}")
         data = resp.json()
-        for step in data.get("steps", []):
-            for item in step.get("content", []):
-                if item.get("type") == "image" and item.get("data"):
-                    img_bytes = base64.b64decode(item["data"])
+        for candidate in data.get("candidates", []):
+            for part in candidate.get("content", {}).get("parts", []):
+                inline = part.get("inlineData", {})
+                if inline.get("data"):
+                    img_bytes = base64.b64decode(inline["data"])
                     output_path.parent.mkdir(parents=True, exist_ok=True)
                     output_path.write_bytes(img_bytes)
                     return ImageGenResult(True, image_path=output_path)
-        return ImageGenResult(False, error="API 回傳中找不到圖片資料。")
+        return ImageGenResult(False, error=f"API 回傳中找不到圖片資料：{str(data)[:200]}")
 
     def generate_batch(
         self,
