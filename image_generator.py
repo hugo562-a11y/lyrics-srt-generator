@@ -35,6 +35,14 @@ class ImageGenResult:
     error: str = ""
 
 
+_GEMINI_IMAGE_CANDIDATES = [
+    "gemini-2.0-flash-preview-image-generation",
+    "gemini-2.0-flash-exp",
+    "gemini-flash-experimental",
+    "gemini-2.0-flash",
+]
+
+
 class ImageGenerator:
     def __init__(self, provider: str, api_key: str, style: str = "電影風", base_url: str | None = None):
         if requests is None:
@@ -45,6 +53,7 @@ class ImageGenerator:
         self.base_url = base_url
         self._session = requests.Session()
         self._session.headers.update({"User-Agent": "lyrics-srt-generator/1.0"})
+        self._gemini_model: str | None = None
 
     def test_connection(self) -> tuple[bool, str]:
         try:
@@ -100,8 +109,28 @@ class ImageGenerator:
         output_path.write_bytes(img_resp.content)
         return ImageGenResult(True, image_path=output_path)
 
+    def _detect_gemini_model(self) -> str | None:
+        """找第一個可用的圖片生成模型（結果快取在 self._gemini_model）。"""
+        if self._gemini_model:
+            return self._gemini_model
+        base = "https://generativelanguage.googleapis.com/v1beta/models"
+        for name in _GEMINI_IMAGE_CANDIDATES:
+            try:
+                r = self._session.get(f"{base}/{name}?key={self.api_key}", timeout=10)
+                if r.status_code == 200:
+                    self._gemini_model = name
+                    return name
+            except Exception:
+                pass
+        return None
+
     def _generate_gemini(self, prompt: str, output_path: Path) -> ImageGenResult:
-        model = "gemini-2.0-flash-preview-image-generation"
+        model = self._detect_gemini_model()
+        if model is None:
+            return ImageGenResult(False, error=(
+                "找不到可用的 Gemini 圖片生成模型。"
+                f"已嘗試：{', '.join(_GEMINI_IMAGE_CANDIDATES)}"
+            ))
         url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
             f"?key={self.api_key}"
@@ -123,7 +152,7 @@ class ImageGenerator:
                     output_path.parent.mkdir(parents=True, exist_ok=True)
                     output_path.write_bytes(img_bytes)
                     return ImageGenResult(True, image_path=output_path)
-        return ImageGenResult(False, error=f"API 回傳中找不到圖片資料：{str(data)[:200]}")
+        return ImageGenResult(False, error=f"[{model}] API 回傳中找不到圖片資料：{str(data)[:200]}")
 
     def generate_batch(
         self,
