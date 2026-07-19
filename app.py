@@ -954,8 +954,8 @@ class LyricsSrtApp(tk.Tk):
         ttk.Button(img_frame, text="測試", command=self._test_img_api, width=5).grid(row=r2, column=4, padx=(4, 0), pady=(0, 4))
 
         r2 = 2
-        self.img_gen_btn = ttk.Button(img_frame, text="為每句歌詞生成影像", command=self._start_image_generation)
-        self.img_gen_btn.grid(row=r2, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+        self.img_scene_btn = ttk.Button(img_frame, text="生成場景影像提示詞", command=self._start_scene_prompt_gen)
+        self.img_scene_btn.grid(row=r2, column=0, columnspan=3, sticky="ew", pady=(4, 0))
         self.img_export_btn = ttk.Button(img_frame, text="匯出歌詞影片（需先生成影像）", command=self._export_lyric_video)
         self.img_export_btn.grid(row=r2, column=3, columnspan=2, sticky="ew", pady=(4, 0), padx=(4, 0))
 
@@ -1433,6 +1433,9 @@ class LyricsSrtApp(tk.Tk):
                         messagebox.showinfo(APP_TITLE, f"API 連線成功！\n{msg}")
                     else:
                         messagebox.showerror(APP_TITLE, f"API 連線失敗：\n{msg}")
+                elif event == "scene_prompts_done":
+                    self._set_progress_status("場景影像提示詞生成完成", busy=False)
+                    self._show_scene_prompts(payload)
                 elif event == "img_gen_done":
                     output_dir, success, fail, first_err = payload
                     self._set_progress_status(f"影像生成完成：成功 {success} 張，失敗 {fail} 張", busy=False)
@@ -1882,6 +1885,78 @@ class LyricsSrtApp(tk.Tk):
                 shutil.rmtree(temporary_dir, ignore_errors=True)
 
     # ── AI 影像生成 ───────────────────────────────────────────────────
+
+    def _start_scene_prompt_gen(self) -> None:
+        from image_generator import ImageGenerator
+        provider = self.img_provider_var.get()
+        key = self.img_api_key_var.get().strip()
+        if not key:
+            messagebox.showwarning(APP_TITLE, "請先輸入 API Key。")
+            return
+        active = [s for s in self.segments if not s.deleted and s.kind == LYRIC_KIND and s.text.strip()]
+        if not active:
+            messagebox.showwarning(APP_TITLE, "沒有歌詞可以分析，請先完成 AI 分析。")
+            return
+        self._save_app_config()
+        self._set_progress_status("正在分析歌詞場景，請稍候…", busy=True)
+        lyrics = [s.text for s in active]
+        style_name = self.img_style_var.get()
+        def _do():
+            try:
+                gen = ImageGenerator(provider, key, style=style_name)
+                scenes = gen.generate_scene_prompts(lyrics, style_name)
+                self.events.put(("scene_prompts_done", scenes))
+            except Exception as exc:
+                self.events.put(("img_error", str(exc)))
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _show_scene_prompts(self, scenes: list) -> None:
+        dlg = tk.Toplevel(self)
+        dlg.title("影像場景提示詞")
+        dlg.geometry("740x540")
+        dlg.resizable(True, True)
+
+        txt = tk.Text(dlg, wrap=tk.WORD, font=("Consolas", 10), padx=8, pady=6)
+        sb = ttk.Scrollbar(dlg, orient=tk.VERTICAL, command=txt.yview)
+        txt.configure(yscrollcommand=sb.set)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        txt.pack(fill=tk.BOTH, expand=True, padx=(8, 0), pady=(8, 0))
+
+        for i, scene in enumerate(scenes, 1):
+            txt.insert(tk.END, f"【場景 {i}】{scene.get('scene', '')}\n", "heading")
+            txt.insert(tk.END, f"歌詞：{scene.get('lyrics', '')}\n", "sub")
+            txt.insert(tk.END, f"Prompt：{scene.get('prompt', '')}\n\n", "prompt")
+        txt.tag_configure("heading", font=("Microsoft JhengHei UI", 10, "bold"))
+        txt.tag_configure("sub", foreground="#888888")
+        txt.tag_configure("prompt", foreground="#00aaff")
+        txt.config(state=tk.DISABLED)
+
+        btn_frame = ttk.Frame(dlg)
+        btn_frame.pack(fill=tk.X, padx=8, pady=8)
+
+        def _copy_prompts():
+            prompts_only = "\n".join(s.get("prompt", "") for s in scenes)
+            dlg.clipboard_clear()
+            dlg.clipboard_append(prompts_only)
+            messagebox.showinfo(APP_TITLE, f"已複製 {len(scenes)} 個提示詞到剪貼簿。", parent=dlg)
+
+        def _export_txt():
+            path = filedialog.asksaveasfilename(
+                parent=dlg, title="儲存提示詞", defaultextension=".txt",
+                filetypes=[("文字檔", "*.txt"), ("所有檔案", "*.*")],
+            )
+            if not path:
+                return
+            with open(path, "w", encoding="utf-8") as f:
+                for i, scene in enumerate(scenes, 1):
+                    f.write(f"=== Scene {i}: {scene.get('scene', '')} ===\n")
+                    f.write(f"歌詞：{scene.get('lyrics', '')}\n")
+                    f.write(f"Prompt: {scene.get('prompt', '')}\n\n")
+            messagebox.showinfo(APP_TITLE, f"已儲存至：{path}", parent=dlg)
+
+        ttk.Button(btn_frame, text="複製所有 Prompt", command=_copy_prompts).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(btn_frame, text="匯出為 .txt", command=_export_txt).pack(side=tk.LEFT)
+        ttk.Button(btn_frame, text="關閉", command=dlg.destroy).pack(side=tk.RIGHT)
 
     def _test_img_api(self) -> None:
         from image_generator import ImageGenerator
