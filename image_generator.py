@@ -101,28 +101,26 @@ class ImageGenerator:
         return ImageGenResult(True, image_path=output_path)
 
     def _generate_gemini(self, prompt: str, output_path: Path) -> ImageGenResult:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:generateContent?key={self.api_key}"
+        # 用 Interactions API（Gemini 現行圖片生成介面）；舊版 imagen-3.0-generate-002
+        # 走 generateContent 端點會失敗，因為該模型只支援 :predict。
+        url = "https://generativelanguage.googleapis.com/v1beta/interactions"
+        headers = {"x-goog-api-key": self.api_key, "Content-Type": "application/json"}
         body = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "responseModalities": ["TEXT", "IMAGE"],
-            },
+            "model": "gemini-3.1-flash-image",
+            "input": [{"type": "text", "text": prompt}],
+            "response_format": {"type": "image", "mime_type": "image/png"},
         }
-        resp = self._session.post(url, json=body, timeout=120)
+        resp = self._session.post(url, headers=headers, json=body, timeout=120)
         if resp.status_code != 200:
             return ImageGenResult(False, error=f"API 錯誤 ({resp.status_code}): {resp.text[:300]}")
         data = resp.json()
-        candidates = data.get("candidates", [])
-        if not candidates:
-            return ImageGenResult(False, error="API 未回傳任何候選圖片。")
-        parts = candidates[0].get("content", {}).get("parts", [])
-        for part in parts:
-            inline = part.get("inlineData", {})
-            if inline.get("data"):
-                img_bytes = base64.b64decode(inline["data"])
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                output_path.write_bytes(img_bytes)
-                return ImageGenResult(True, image_path=output_path)
+        for step in data.get("steps", []):
+            for item in step.get("content", []):
+                if item.get("type") == "image" and item.get("data"):
+                    img_bytes = base64.b64decode(item["data"])
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    output_path.write_bytes(img_bytes)
+                    return ImageGenResult(True, image_path=output_path)
         return ImageGenResult(False, error="API 回傳中找不到圖片資料。")
 
     def generate_batch(

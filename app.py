@@ -27,6 +27,7 @@ from prompts import PROMPT_STYLE_MAP as PROMPT_STYLES
 
 
 APP_TITLE = "歌詞 SRT 產生器"
+_APP_CONFIG_PATH = Path(__file__).parent / "app_config.json"
 MUSIC_KIND = "音樂"
 LYRIC_KIND = "歌詞"
 SUPPORTED_AUDIO = [("音檔", "*.mp3 *.wav *.m4a *.flac *.aac *.ogg"), ("所有檔案", "*.*")]
@@ -674,6 +675,7 @@ class LyricsSrtApp(tk.Tk):
         self.img_api_key_var = tk.StringVar(value="")
         self.img_style_var = tk.StringVar(value="電影風")
         self._build_ui()
+        self._load_app_config()
         self._apply_dark_titlebar()
         self.bind_all("<Control-z>", self.undo)
         self.bind_all("<Control-y>", self.redo)
@@ -703,8 +705,33 @@ class LyricsSrtApp(tk.Tk):
             pass
 
     def on_closing(self) -> None:
+        self._save_app_config()
         self._stop_audio_process()
         self.destroy()
+
+    def _load_app_config(self) -> None:
+        try:
+            cfg = json.loads(_APP_CONFIG_PATH.read_text(encoding="utf-8"))
+            if "img_provider" in cfg: self.img_provider_var.set(cfg["img_provider"])
+            if "img_api_key" in cfg: self.img_api_key_var.set(cfg["img_api_key"])
+            if "img_style" in cfg: self.img_style_var.set(cfg["img_style"])
+        except Exception:
+            pass
+
+    def _save_app_config(self) -> None:
+        try:
+            cfg = {}
+            if _APP_CONFIG_PATH.exists():
+                cfg = json.loads(_APP_CONFIG_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            cfg = {}
+        cfg["img_provider"] = self.img_provider_var.get()
+        cfg["img_api_key"] = self.img_api_key_var.get()
+        cfg["img_style"] = self.img_style_var.get()
+        try:
+            _APP_CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
 
     def _build_ui(self) -> None:
         style = ttk.Style(self)
@@ -1861,6 +1888,7 @@ class LyricsSrtApp(tk.Tk):
         if not key:
             messagebox.showwarning(APP_TITLE, "請先輸入 API Key。")
             return
+        self._save_app_config()
         self._set_progress_status("正在測試 API 連線…", busy=True)
         def _do():
             try:
@@ -1879,6 +1907,7 @@ class LyricsSrtApp(tk.Tk):
         if not key:
             messagebox.showwarning(APP_TITLE, "請先輸入 API Key。")
             return
+        self._save_app_config()
         active = [s for s in self.segments if not s.deleted and s.kind == LYRIC_KIND and s.text.strip()]
         if not active:
             messagebox.showinfo(APP_TITLE, "沒有可生成影像的歌詞句。")
