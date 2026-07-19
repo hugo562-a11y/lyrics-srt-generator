@@ -69,6 +69,17 @@ PLAYHEAD_COLOR = "#ff4d4f"
 
 
 @dataclass
+class ImageClip:
+    image_path: str
+    start: float
+    end: float
+
+    @property
+    def name(self) -> str:
+        return Path(self.image_path).stem
+
+
+@dataclass
 class Segment:
     start: float
     end: float
@@ -290,19 +301,23 @@ class WaveformView(ttk.Frame):
 
     RULER_H = 18
     WAVE_H = 96
+    IMAGE_TRACK_H = 40
     MIN_PPS = 8.0
     MAX_PPS = 400.0
     EDGE_GRAB_PX = 6
 
-    def __init__(self, master: tk.Widget, *, on_seek, on_select, on_edit) -> None:
+    def __init__(self, master: tk.Widget, *, on_seek, on_select, on_edit, on_image_clip_change=None) -> None:
         super().__init__(master)
         self.on_seek = on_seek
         self.on_select = on_select
         self.on_edit = on_edit
+        self.on_image_clip_change = on_image_clip_change
         self.duration = 0.0
         self.samples = None  # np.ndarray | None，讀取聲波前先顯示空白時間軸
         self.segments: list[Segment] = []
+        self.image_clips: list = []
         self.selected_index: int | None = None
+        self.selected_img_index: int | None = None
         self.pixels_per_second = 40.0
         self.playhead = 0.0
         self._drag: dict | None = None
@@ -318,7 +333,7 @@ class WaveformView(ttk.Frame):
         canvas_area.pack(fill="both", expand=True)
         canvas_area.columnconfigure(0, weight=1)
         canvas_area.rowconfigure(0, weight=1)
-        self.canvas = tk.Canvas(canvas_area, height=self.RULER_H + self.WAVE_H, background=WAVE_CANVAS_BG, highlightthickness=0)
+        self.canvas = tk.Canvas(canvas_area, height=self.RULER_H + self.WAVE_H + self.IMAGE_TRACK_H, background=WAVE_CANVAS_BG, highlightthickness=0)
         self.canvas.grid(row=0, column=0, sticky="ew")
         hscroll = ttk.Scrollbar(canvas_area, orient="horizontal", command=self.canvas.xview)
         hscroll.grid(row=1, column=0, sticky="ew")
@@ -331,6 +346,7 @@ class WaveformView(ttk.Frame):
         self.canvas.bind("<MouseWheel>", self._on_wheel)
         self.canvas.bind("<ButtonPress-2>", self._on_pan_start)
         self.canvas.bind("<B2-Motion>", self._on_pan_move)
+        self.canvas.bind("<Double-Button-1>", self._on_dblclick)
 
     def set_audio(self, duration: float, samples=None) -> None:
         self.duration = max(0.0, duration)
@@ -379,7 +395,7 @@ class WaveformView(ttk.Frame):
     def set_playhead(self, t: float, follow: bool = False) -> None:
         self.playhead = max(0.0, min(self.duration, t))
         x = self._time_to_x(self.playhead)
-        total_h = self.RULER_H + self.WAVE_H
+        total_h = self.RULER_H + self.WAVE_H + self.IMAGE_TRACK_H
         if self.canvas.find_withtag("playhead"):
             self.canvas.coords("playhead", x, 0, x, total_h)
         else:
@@ -423,11 +439,12 @@ class WaveformView(ttk.Frame):
     def _redraw(self) -> None:
         self.canvas.delete("all")
         width = self._canvas_width()
-        height = self.RULER_H + self.WAVE_H
+        height = self.RULER_H + self.WAVE_H + self.IMAGE_TRACK_H
         self.canvas.configure(scrollregion=(0, 0, width, height))
         self._draw_ruler(width, height)
         self._draw_waveform(width)
         self._draw_segments()
+        self._draw_image_clips(width)
         self.canvas.create_line(self._time_to_x(self.playhead), 0, self._time_to_x(self.playhead), height, fill=PLAYHEAD_COLOR, width=2, tags=("playhead",))
 
     def _draw_ruler(self, width: int, height: int) -> None:
@@ -492,6 +509,32 @@ class WaveformView(ttk.Frame):
             self.canvas.create_line(x0, top, x0, bottom, fill=START_HANDLE_COLOR, width=2, tags=("handle", f"handle:{index}:start"))
             self.canvas.create_line(x1, top, x1, bottom, fill=END_HANDLE_COLOR, width=2, tags=("handle", f"handle:{index}:end"))
 
+    def _draw_image_clips(self, width: int) -> None:
+        top = self.RULER_H + self.WAVE_H
+        bottom = top + self.IMAGE_TRACK_H
+        self.canvas.create_rectangle(0, top, width, bottom, fill="#111218", width=0)
+        self.canvas.create_text(3, top + 3, text="影像", anchor="nw",
+                                font=("Microsoft JhengHei UI", 7), fill="#44446a")
+        for i, clip in enumerate(self.image_clips):
+            x0 = self._time_to_x(clip.start)
+            x1 = self._time_to_x(clip.end)
+            sel = (i == self.selected_img_index)
+            fill = "#2a4a8a" if sel else "#1e3362"
+            outline = "#6fa0ff" if sel else "#3d5fa0"
+            self.canvas.create_rectangle(
+                x0 + 1, top + 3, x1 - 1, bottom - 3,
+                fill=fill, outline=outline, width=1,
+                tags=("imgclip", f"imgclip:{i}"),
+            )
+            label = clip.name[:22] + "…" if len(clip.name) > 22 else clip.name
+            self.canvas.create_text(x0 + 5, top + 6, text=label, anchor="nw",
+                                    font=("Microsoft JhengHei UI", 8), fill="#99bbee",
+                                    tags=("imgclip_lbl",))
+            self.canvas.create_line(x0, top, x0, bottom, fill="#5588cc", width=2,
+                                    tags=("imghandle", f"imghandle:{i}:start"))
+            self.canvas.create_line(x1, top, x1, bottom, fill="#5588cc", width=2,
+                                    tags=("imghandle", f"imghandle:{i}:end"))
+
     def _find_handle(self, x: float, y: float) -> tuple[int, str] | None:
         best = None
         best_dist = self.EDGE_GRAB_PX
@@ -524,6 +567,9 @@ class WaveformView(ttk.Frame):
         if y <= self.RULER_H:
             self.on_seek(self._x_to_time(x))
             return
+        if y >= self.RULER_H + self.WAVE_H:
+            self._press_image_track(x, y)
+            return
         handle = self._find_handle(x, y)
         if handle is not None:
             self._drag = {"index": handle[0], "edge": handle[1]}
@@ -534,10 +580,53 @@ class WaveformView(ttk.Frame):
         else:
             self.on_seek(self._x_to_time(x))
 
+    def _press_image_track(self, x: float, _y: float) -> None:
+        # 邊緣 handle 優先
+        best_dist = self.EDGE_GRAB_PX
+        best = None
+        for item in self.canvas.find_withtag("imghandle"):
+            coords = self.canvas.coords(item)
+            if not coords:
+                continue
+            dist = abs(coords[0] - x)
+            if dist <= best_dist:
+                best_dist = dist
+                tag = next((t for t in self.canvas.gettags(item) if t.startswith("imghandle:")), None)
+                if tag:
+                    _, idx_s, edge = tag.split(":")
+                    best = (int(idx_s), edge)
+        if best is not None:
+            i, edge = best
+            clip = self.image_clips[i]
+            self._drag = {"type": "imgclip", "index": i, "edge": edge,
+                          "orig_start": clip.start, "orig_end": clip.end, "grab_x": x}
+            self.selected_img_index = i
+            self._redraw()
+            return
+        # 點在 clip 本體內 → 移動
+        for item in self.canvas.find_withtag("imgclip"):
+            coords = self.canvas.coords(item)
+            if not coords:
+                continue
+            x0, _y0, x1, _y1 = coords
+            if x0 <= x <= x1:
+                tag = next((t for t in self.canvas.gettags(item) if t.startswith("imgclip:")), None)
+                if tag:
+                    i = int(tag.split(":")[1])
+                    clip = self.image_clips[i]
+                    self._drag = {"type": "imgclip", "index": i, "edge": "body",
+                                  "orig_start": clip.start, "orig_end": clip.end, "grab_x": x}
+                    self.selected_img_index = i
+                    self._redraw()
+                    return
+
     def _on_drag(self, event: tk.Event) -> None:
         if not self._drag:
             return
         x = self.canvas.canvasx(event.x)
+        if self._drag.get("type") == "imgclip":
+            self._drag_image_clip(x)
+            return
         t = self._x_to_time(x)
         index, edge = self._drag["index"], self._drag["edge"]
         if not (0 <= index < len(self.segments)):
@@ -561,10 +650,73 @@ class WaveformView(ttk.Frame):
             else:
                 self.canvas.coords(rect, x0, y0, x, y1)
 
+    def _drag_image_clip(self, canvas_x: float) -> None:
+        drag = self._drag
+        i = drag["index"]
+        if not (0 <= i < len(self.image_clips)):
+            return
+        top = self.RULER_H + self.WAVE_H
+        bottom = top + self.IMAGE_TRACK_H
+        t = self._x_to_time(canvas_x)
+        t_grab = self._x_to_time(drag["grab_x"])
+        edge = drag["edge"]
+        orig_s, orig_e = drag["orig_start"], drag["orig_end"]
+        if edge == "body":
+            dt = t - t_grab
+            new_s = max(0.0, orig_s + dt)
+            new_e = new_s + (orig_e - orig_s)
+        elif edge == "start":
+            new_s = max(0.0, min(t, orig_e - 0.5))
+            new_e = orig_e
+        else:
+            new_e = min(max(t, orig_s + 0.5), self.duration if self.duration else t + 1)
+            new_s = orig_s
+        drag["preview_start"] = new_s
+        drag["preview_end"] = new_e
+        x0 = self._time_to_x(new_s)
+        x1 = self._time_to_x(new_e)
+        rect = next(iter(self.canvas.find_withtag(f"imgclip:{i}")), None)
+        if rect:
+            self.canvas.coords(rect, x0 + 1, top + 3, x1 - 1, bottom - 3)
+        self.canvas.coords(f"imghandle:{i}:start", x0, top, x0, bottom)
+        self.canvas.coords(f"imghandle:{i}:end", x1, top, x1, bottom)
+
     def _on_release(self, _event: tk.Event) -> None:
-        if self._drag and "preview" in self._drag:
-            self.on_edit(self._drag["index"], self._drag["edge"], self._drag["preview"])
+        if self._drag:
+            if self._drag.get("type") == "imgclip" and "preview_start" in self._drag:
+                i = self._drag["index"]
+                if 0 <= i < len(self.image_clips):
+                    self.image_clips[i].start = self._drag["preview_start"]
+                    self.image_clips[i].end = self._drag["preview_end"]
+                if self.on_image_clip_change:
+                    self.on_image_clip_change()
+            elif "preview" in self._drag:
+                self.on_edit(self._drag["index"], self._drag["edge"], self._drag["preview"])
         self._drag = None
+
+    def _on_dblclick(self, event: tk.Event) -> None:
+        y = event.y
+        if y < self.RULER_H + self.WAVE_H:
+            return
+        x = self.canvas.canvasx(event.x)
+        for item in self.canvas.find_withtag("imgclip"):
+            coords = self.canvas.coords(item)
+            if not coords:
+                continue
+            x0, _y0, x1, _y1 = coords
+            if x0 <= x <= x1:
+                tag = next((t for t in self.canvas.gettags(item) if t.startswith("imgclip:")), None)
+                if tag:
+                    i = int(tag.split(":")[1])
+                    del self.image_clips[i]
+                    if self.selected_img_index == i:
+                        self.selected_img_index = None
+                    elif self.selected_img_index and self.selected_img_index > i:
+                        self.selected_img_index -= 1
+                    self._redraw()
+                    if self.on_image_clip_change:
+                        self.on_image_clip_change()
+                    return
 
     def _on_wheel(self, event: tk.Event) -> None:
         self._zoom_at(event.x, 1.15 if event.delta > 0 else 1 / 1.15)
@@ -601,6 +753,8 @@ class LyricsSrtApp(tk.Tk):
         self._audio_process: subprocess.Popen[str] | None = None
         self.preview_image_label: tk.Label | None = None
         self.preview_photo: object | None = None
+        self.image_clips: list[ImageClip] = []
+        self._img_bg_cache: tuple[str, object] | None = None
         self.subtitle_font_size_var = tk.IntVar(value=64)
         self.subtitle_text_color = "#f6f7f4"
         self.subtitle_outline_color = "#100c09"
@@ -836,8 +990,15 @@ class LyricsSrtApp(tk.Tk):
 
         wave_frame = ttk.LabelFrame(center, text=" 聲波與時間軸 ", padding=(8, 4))
         wave_frame.grid(row=0, column=0, sticky="ew", pady=(0, 4))
-        self.waveform = WaveformView(wave_frame, on_seek=self._waveform_seek, on_select=self._activate_segment, on_edit=self._waveform_edit)
+        self.waveform = WaveformView(wave_frame, on_seek=self._waveform_seek, on_select=self._activate_segment, on_edit=self._waveform_edit, on_image_clip_change=self._on_image_clip_change)
+        self.waveform.image_clips = self.image_clips
         self.waveform.pack(fill="both", expand=True)
+
+        img_track_bar = ttk.Frame(wave_frame)
+        img_track_bar.pack(fill="x", pady=(2, 0))
+        ttk.Label(img_track_bar, text="背景影像軌：", foreground=DARK_MUTED_FG).pack(side="left")
+        ttk.Button(img_track_bar, text="＋ 匯入影像", command=self._import_image_clip, width=10).pack(side="left", padx=(4, 0))
+        ttk.Label(img_track_bar, text="（雙擊影像片段可刪除）", foreground=DARK_MUTED_FG).pack(side="left", padx=(6, 0))
 
         body = ttk.LabelFrame(center, text=" 歌詞時間軸 ", padding=(8, 4))
         body.grid(row=1, column=0, sticky="nsew")
@@ -1135,6 +1296,23 @@ class LyricsSrtApp(tk.Tk):
         self.waveform.set_playhead(t)
         if self.playing:
             self._start_playback(t)
+
+    def _import_image_clip(self) -> None:
+        path = filedialog.askopenfilename(
+            title="選擇背景影像",
+            filetypes=[("影像檔案", "*.jpg *.jpeg *.png *.bmp *.webp"), ("所有檔案", "*.*")],
+        )
+        if not path:
+            return
+        start = self.playback_offset
+        end = min(start + 5.0, self.duration if self.duration else start + 5.0)
+        clip = ImageClip(image_path=path, start=start, end=end)
+        self.image_clips.append(clip)
+        self.waveform._redraw()
+        self._refresh_preview()
+
+    def _on_image_clip_change(self) -> None:
+        self._refresh_preview()
 
     def _waveform_edit(self, index: int, edge: str, value: float) -> None:
         if not (0 <= index < len(self.segments)):
@@ -1589,6 +1767,10 @@ class LyricsSrtApp(tk.Tk):
                 "vocals": self.vocals_var.get(),
                 "force_align": self.force_align_var.get(),
             },
+            "image_clips": [
+                {"image_path": c.image_path, "start": c.start, "end": c.end}
+                for c in self.image_clips
+            ],
         }
         with open(output, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -1649,6 +1831,15 @@ class LyricsSrtApp(tk.Tk):
             if "precise" in s: self.precise_var.set(bool(s["precise"]))
             if "vocals" in s: self.vocals_var.set(bool(s["vocals"]))
             if "force_align" in s: self.force_align_var.set(bool(s["force_align"]))
+            self.image_clips.clear()
+            for cd in data.get("image_clips", []):
+                if Path(cd.get("image_path", "")).exists():
+                    self.image_clips.append(ImageClip(
+                        image_path=cd["image_path"],
+                        start=float(cd["start"]),
+                        end=float(cd["end"]),
+                    ))
+            self.waveform._redraw()
             self.refresh_tree()
             self._refresh_preview()
             self._set_progress_status(f"已載入專案：{selected}", busy=False)
@@ -1795,31 +1986,47 @@ class LyricsSrtApp(tk.Tk):
         except ImportError:
             return
         try:
+            from PIL import Image as PilImage
             preview_time = self.playback_offset if now is None else now
             active = [item for item in self.segments if not item.deleted and item.kind == LYRIC_KIND and item.text.strip()]
-            
+
             cw, ch, sw, sh = self._get_preview_dimensions()
             style = self._current_subtitle_style(target_height=sh)
-            
-            image = render_preview_frame(active, preview_time, sw, sh, self.png_animation_var.get(), style)
+
+            subtitle_layer = render_preview_frame(active, preview_time, sw, sh, self.png_animation_var.get(), style)
             if not self.playing and not any(s.start <= preview_time < s.end for s in active) and active:
-                image = render_preview_frame(active, active[0].start + 0.01, sw, sh, self.png_animation_var.get(), style)
-            
+                subtitle_layer = render_preview_frame(active, active[0].start + 0.01, sw, sh, self.png_animation_var.get(), style)
+
+            # 尋找當前時間點的背景影像
+            bg = PilImage.new("RGBA", (sw, sh), (20, 21, 24, 255))
+            for clip in self.image_clips:
+                if clip.start <= preview_time < clip.end:
+                    try:
+                        if not (self._img_bg_cache and self._img_bg_cache[0] == clip.image_path):
+                            raw = PilImage.open(clip.image_path).convert("RGB")
+                            self._img_bg_cache = (clip.image_path, raw)
+                        bg = self._img_bg_cache[1].resize((sw, sh), PilImage.LANCZOS).convert("RGBA")
+                    except Exception:
+                        pass
+                    break
+
+            image = PilImage.alpha_composite(bg, subtitle_layer)
+
             self.preview_photo = ImageTk.PhotoImage(image)
             canvas = self.preview_image_label
             canvas.delete("all")
-            
+
             # 填滿 Canvas 深色背景
             canvas.create_rectangle(0, 0, cw, ch, fill="#08090b", width=0)
-            
+
             # 繪製置中的影片比例容器（ Letterbox / Pillarbox ）
             x0 = (cw - sw) // 2
             y0 = (ch - sh) // 2
             x1 = x0 + sw
             y1 = y0 + sh
             canvas.create_rectangle(x0, y0, x1, y1, fill="#141518", outline="#4c8bf5", width=1)
-            
-            # 將透明字幕圖像覆蓋至該影片比例容器上
+
+            # 將合成後影像貼上
             canvas.create_image(cw // 2, ch // 2, image=self.preview_photo, anchor="center")
         except Exception:
             pass  # 預覽是輔助功能，繪製失敗不應打斷主要編輯流程。
