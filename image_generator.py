@@ -184,7 +184,43 @@ class ImageGenerator:
                 time.sleep(delay)
         return results
 
-    # ── 場景提示詞生成（免費文字 API）──────────────────────────────
+    # ── 場景提示詞生成（免費文字 API）─────────────────────────────────────────────────────────
+
+
+def generate_scene_prompts_local(lyrics: list[str], style_name: str) -> list[dict]:
+    """依固定範本分場景生成影像提示詞，完全本地運算，不需任何 API。
+
+    分段規則：
+      ≤4 句  → 每句獨立一場景
+      5-9 句  → 每 2 句一場景
+      10-20 句 → 每 3 句一場景
+      >20 句  → 每 ⌊n/7⌋ 句一場景（最少 3 句），控制在 7 個場景左右
+    """
+    style_desc = STYLE_PRESETS.get(style_name, "high quality digital art")
+    n = len(lyrics)
+    if n <= 4:
+        size = 1
+    elif n <= 9:
+        size = 2
+    elif n <= 20:
+        size = 3
+    else:
+        size = max(3, n // 7)
+
+    scenes = []
+    for i in range(0, n, size):
+        group = lyrics[i: i + size]
+        scene_lyrics = "／".join(group)
+        prompt = f"{style_desc}, scene: {scene_lyrics}, masterpiece, best quality"
+        scenes.append({
+            "scene": f"第 {len(scenes) + 1} 段",
+            "lyrics": scene_lyrics,
+            "prompt": prompt,
+        })
+    return scenes
+
+
+    # ── 場景提示詞生成（Gemini / OpenAI 文字 API）──────────────────
 
     def _find_text_model(self) -> str | None:
         base = "https://generativelanguage.googleapis.com/v1beta/models"

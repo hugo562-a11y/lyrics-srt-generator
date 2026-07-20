@@ -2094,28 +2094,18 @@ class LyricsSrtApp(tk.Tk):
     # ── AI 影像生成 ───────────────────────────────────────────────────
 
     def _start_scene_prompt_gen(self) -> None:
-        from image_generator import ImageGenerator
-        provider = self.img_provider_var.get()
-        key = self.img_api_key_var.get().strip()
-        if not key:
-            messagebox.showwarning(APP_TITLE, "請先輸入 API Key。")
-            return
+        from image_generator import generate_scene_prompts_local
         active = [s for s in self.segments if not s.deleted and s.kind == LYRIC_KIND and s.text.strip()]
         if not active:
             messagebox.showwarning(APP_TITLE, "沒有歌詞可以分析，請先完成 AI 分析。")
             return
-        self._save_app_config()
-        self._set_progress_status("正在分析歌詞場景，請稍候…", busy=True)
         lyrics = [s.text for s in active]
         style_name = self.img_style_var.get()
-        def _do():
-            try:
-                gen = ImageGenerator(provider, key, style=style_name)
-                scenes = gen.generate_scene_prompts(lyrics, style_name)
-                self.events.put(("scene_prompts_done", scenes))
-            except Exception as exc:
-                self.events.put(("img_error", str(exc)))
-        threading.Thread(target=_do, daemon=True).start()
+        try:
+            scenes = generate_scene_prompts_local(lyrics, style_name)
+            self._show_scene_prompts(scenes)
+        except Exception as exc:
+            messagebox.showerror(APP_TITLE, f"生成失敗：{exc}")
 
     def _show_scene_prompts(self, scenes: list) -> None:
         dlg = tk.Toplevel(self)
