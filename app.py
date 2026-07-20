@@ -24,6 +24,16 @@ from bootstrap import add_nvidia_dll_paths, block_conflicting_torch, check_ffmpe
 block_conflicting_torch()
 from subtitle_png_renderer import ANIMATION_STYLES
 from prompts import PROMPT_STYLE_MAP as PROMPT_STYLES
+from storyboard_data import (
+    SCHEMA_VERSION,
+    SHOT_TYPES, COLOR_TONES, SHOT_TYPE_EN, COLOR_TONE_EN,
+    CAMERA_ANGLES, CAMERA_MOVEMENTS, CAMERA_SPEEDS, CAMERA_STABILITY,
+    COMPOSITIONS, ORIENTATIONS, ENV_DYNAMICS, EMOTIONS,
+    NEGATIVE_OPTIONS, ACTIONS_GENERAL, EXPRESSIONS, GAZE_OPTIONS,
+    SCENE_LOCATIONS, TIMES_OF_DAY, WEATHER_OPTIONS,
+    MODEL_MODE_NAMES,
+)
+from prompt_assembler import assemble_image_prompt, assemble_video_prompt, assemble_negative_prompt
 
 
 APP_TITLE = "歌詞 SRT 產生器"
@@ -88,35 +98,42 @@ class Segment:
     deleted: bool = False
 
 
-SHOT_TYPES = ["大遠景", "遠景", "全景", "中景", "中近景", "近景", "特寫", "俯拍", "仰拍", "主觀"]
-COLOR_TONES = ["暖色", "冷色", "黑白", "復古", "高反差", "低飽和", "夕陽橙", "夜藍", "霓虹"]
-
-SHOT_TYPE_EN: dict[str, str] = {
-    "大遠景": "extreme long shot", "遠景": "long shot", "全景": "full shot",
-    "中景": "medium shot", "中近景": "medium close-up", "近景": "close-up",
-    "特寫": "extreme close-up", "俯拍": "bird's eye view",
-    "仰拍": "low angle shot", "主觀": "POV shot",
-}
-COLOR_TONE_EN: dict[str, str] = {
-    "暖色": "warm color tones, golden light",
-    "冷色": "cool blue tones, cold atmosphere",
-    "黑白": "black and white, monochrome",
-    "復古": "vintage film look, retro colors, aged",
-    "高反差": "high contrast, dramatic shadows",
-    "低飽和": "desaturated, muted colors",
-    "夕陽橙": "golden hour, sunset orange glow",
-    "夜藍": "night blue, midnight atmosphere",
-    "霓虹": "neon lights, vibrant glowing colors",
-}
+# SHOT_TYPES, COLOR_TONES, SHOT_TYPE_EN, COLOR_TONE_EN imported from storyboard_data
 
 
 @dataclass
 class StoryboardScene:
+    # ── core ──────────────────────────────────────────────────────────────────
     shot_type: str = "中景"
     style: str = "電影風"
     tone: str = "暖色"
     lyric_texts: list = field(default_factory=list)
     char_indices: list = field(default_factory=list)
+    # ── environment ───────────────────────────────────────────────────────────
+    scene_group_id: str = ""
+    scene_location: str = "（無）"
+    scene_time: str = "不指定"
+    weather: str = "不指定"
+    # ── composition ───────────────────────────────────────────────────────────
+    composition: str = "（無）"
+    orientation: str = "（無）"
+    # ── per-character data (keyed by str(char_index)) ─────────────────────────
+    char_actions: dict = field(default_factory=dict)
+    char_expressions: dict = field(default_factory=dict)
+    char_gaze: dict = field(default_factory=dict)
+    # ── camera ────────────────────────────────────────────────────────────────
+    camera_angle: str = "平視"
+    camera_movement: str = "固定"
+    camera_speed: str = "緩慢"
+    camera_stability: str = "穩定"
+    # ── animation ─────────────────────────────────────────────────────────────
+    start_state: str = ""
+    main_action: str = ""
+    end_state: str = ""
+    # ── mood & dynamics ───────────────────────────────────────────────────────
+    emotions: list = field(default_factory=list)
+    env_dynamics: list = field(default_factory=list)
+    negative_opts: list = field(default_factory=list)
 
 
 CHARACTER_COLORS = ["#4c8bf5", "#37d67a", "#f5a623", "#ff5c5c", "#c678dd", "#56b6c2", "#89ddff"]
@@ -124,10 +141,33 @@ CHARACTER_COLORS = ["#4c8bf5", "#37d67a", "#f5a623", "#ff5c5c", "#c678dd", "#56b
 
 @dataclass
 class Character:
+    # ── identity ──────────────────────────────────────────────────────────────
     name: str = "角色"
     age: str = "青年"
     gender: str = "男"
-    appearance: str = ""
+    # ── physical Bible ────────────────────────────────────────────────────────
+    appearance: str = ""        # free-form override (backward compat)
+    body_type: str = ""         # e.g. "slightly chubby"
+    hair: str = ""              # e.g. "short black hair"
+    face: str = ""              # e.g. "kind face, gentle smile lines"
+    clothing_top: str = ""      # e.g. "white shirt"
+    clothing_bottom: str = ""   # e.g. "khaki pants"
+    clothing_shoes: str = ""    # e.g. "white sneakers"
+    accessories: str = ""       # e.g. "red superhero cape"
+    # ── consistency ───────────────────────────────────────────────────────────
+    consistency_lock: bool = True
+    consistency_terms: str = "same character design, consistent facial features"
+
+
+@dataclass
+class SceneGroup:
+    id: str = ""
+    name: str = ""
+    location: str = ""
+    scene_time: str = "不指定"
+    weather: str = "不指定"
+    bg_elements: str = ""
+    environment_prompt: str = ""
 
 
 @dataclass
@@ -135,6 +175,9 @@ class ProductionSettings:
     era: str = "現代"
     location: str = ""
     bg_desc: str = ""
+
+
+# SCHEMA_VERSION imported from storyboard_data (currently = 2)
 
 
 _SB_CARD_W = 150
@@ -812,7 +855,9 @@ class LyricsSrtApp(tk.Tk):
         self._img_bg_cache: tuple[str, object] | None = None
         self.storyboard: list[StoryboardScene] = []
         self.characters: list[Character] = []
+        self.scene_groups: list[SceneGroup] = []
         self.production: ProductionSettings = ProductionSettings()
+        self._model_mode: str = "通用"
         self._sb_canvas: tk.Canvas | None = None
         self._zoom: float = 1.0
         self._pan_x: float = 20.0
@@ -1401,8 +1446,14 @@ class LyricsSrtApp(tk.Tk):
         ttk.Label(tb, text="分鏡表", font=("Microsoft JhengHei UI", 9, "bold")).pack(side="left")
         ttk.Button(tb, text="＋ 新增", command=self._add_scene, width=7).pack(side="left", padx=(8, 0))
         ttk.Button(tb, text="＋ 角色", command=self._add_character, width=7).pack(side="left", padx=(4, 0))
+        ttk.Button(tb, text="場景群組", command=self._open_scene_groups_dialog, width=7).pack(side="left", padx=(4, 0))
         ttk.Button(tb, text="重置視角", command=self._sb_reset_view, width=7).pack(side="left", padx=(4, 0))
         ttk.Button(tb, text="匯出 TXT", command=self._export_storyboard, width=9).pack(side="right")
+        self._model_mode_var = tk.StringVar(value=self._model_mode)
+        ttk.Combobox(tb, textvariable=self._model_mode_var, values=MODEL_MODE_NAMES,
+                     width=6, state="readonly").pack(side="right", padx=(0, 4))
+        ttk.Label(tb, text="輸出模式:").pack(side="right")
+        self._model_mode_var.trace_add("write", lambda *_: setattr(self, "_model_mode", self._model_mode_var.get()))
         self._sb_zoom_label = ttk.Label(tb, text="100%")
         self._sb_zoom_label.pack(side="right", padx=4)
 
@@ -1710,13 +1761,18 @@ class LyricsSrtApp(tk.Tk):
 
     def _build_scene_detail(self, parent: ttk.Frame, idx: int) -> None:
         scene = self.storyboard[idx]
-        ttk.Label(parent, text=f"場景 {idx + 1}",
+
+        # ── Row 0: scene ID, reorder, core combos, char toggles ───────────────
+        row0 = ttk.Frame(parent)
+        row0.pack(fill="x")
+
+        ttk.Label(row0, text=f"場景 {idx + 1}",
                   font=("Microsoft JhengHei UI", 9, "bold")).pack(side="left", padx=(4, 6))
-        ttk.Label(parent, text="移至第").pack(side="left")
+        ttk.Label(row0, text="移至第").pack(side="left")
         pos_var = tk.StringVar(value=str(idx + 1))
-        pos_e = ttk.Entry(parent, textvariable=pos_var, width=3)
+        pos_e = ttk.Entry(row0, textvariable=pos_var, width=3)
         pos_e.pack(side="left", padx=(2, 0))
-        ttk.Label(parent, text="幕").pack(side="left", padx=(2, 8))
+        ttk.Label(row0, text="幕").pack(side="left", padx=(2, 6))
 
         def _do_reorder(e=None):
             try:
@@ -1738,17 +1794,17 @@ class LyricsSrtApp(tk.Tk):
             self._update_detail_bar()
 
         pos_e.bind("<Return>", _do_reorder)
-        ttk.Separator(parent, orient="vertical").pack(side="left", fill="y", padx=6)
+        ttk.Separator(row0, orient="vertical").pack(side="left", fill="y", padx=4)
 
         for lbl, attr, vals in (
             ("鏡位", "shot_type", SHOT_TYPES),
             ("風格", "style",     list(PROMPT_STYLES.keys())),
             ("色調", "tone",      COLOR_TONES),
         ):
-            ttk.Label(parent, text=lbl).pack(side="left", padx=(0, 2))
+            ttk.Label(row0, text=lbl).pack(side="left", padx=(0, 2))
             var = tk.StringVar(value=getattr(scene, attr))
-            cb = ttk.Combobox(parent, textvariable=var, values=vals, width=7, state="readonly")
-            cb.pack(side="left", padx=(0, 6))
+            cb = ttk.Combobox(row0, textvariable=var, values=vals, width=7, state="readonly")
+            cb.pack(side="left", padx=(0, 5))
 
             def on_combo(e, a=attr, v=var):
                 si = self._selected_scene
@@ -1758,50 +1814,162 @@ class LyricsSrtApp(tk.Tk):
 
             cb.bind("<<ComboboxSelected>>", on_combo)
 
-        ttk.Separator(parent, orient="vertical").pack(side="left", fill="y", padx=6)
-        ttk.Label(parent, text="出場：").pack(side="left", padx=(0, 2))
+        ttk.Separator(row0, orient="vertical").pack(side="left", fill="y", padx=4)
+        ttk.Label(row0, text="出場：").pack(side="left", padx=(0, 2))
         for ci, char in enumerate(self.characters):
             color = CHARACTER_COLORS[ci % len(CHARACTER_COLORS)]
             active = ci in scene.char_indices
             name_txt = char.name if char.name != "角色" else f"角色{ci + 1}"
             btn = tk.Button(
-                parent, text=name_txt,
+                row0, text=name_txt,
                 bg=color if active else DARK_PANEL,
                 fg="white" if active else DARK_MUTED_FG,
                 relief="flat", padx=5, pady=1,
                 command=lambda c=ci: self._toggle_char_in_scene(c),
             )
             btn.pack(side="left", padx=2)
-        ttk.Separator(parent, orient="vertical").pack(side="left", fill="y", padx=6)
-        ttk.Button(parent, text="✕", width=2, command=self._delete_selected_scene).pack(side="left", padx=(2, 0))
+        ttk.Separator(row0, orient="vertical").pack(side="left", fill="y", padx=4)
+        ttk.Button(row0, text="✕", width=2, command=self._delete_selected_scene).pack(side="left", padx=(2, 0))
+
+        # ── Row 1: camera + 3-phase animation + emotions ─────────────────────
+        row1 = ttk.Frame(parent)
+        row1.pack(fill="x", pady=(2, 0))
+
+        ttk.Label(row1, text="運鏡", foreground=DARK_MUTED_FG).pack(side="left", padx=(4, 2))
+        mov_var = tk.StringVar(value=scene.camera_movement)
+        cb_mov = ttk.Combobox(row1, textvariable=mov_var, values=CAMERA_MOVEMENTS, width=9, state="readonly")
+        cb_mov.pack(side="left", padx=(0, 4))
+        mov_var.trace_add("write", lambda *_, v=mov_var, i=idx: self._set_scene_field(i, "camera_movement", v.get()))
+
+        ttk.Label(row1, text="角度", foreground=DARK_MUTED_FG).pack(side="left", padx=(0, 2))
+        ang_var = tk.StringVar(value=scene.camera_angle)
+        cb_ang = ttk.Combobox(row1, textvariable=ang_var, values=CAMERA_ANGLES, width=7, state="readonly")
+        cb_ang.pack(side="left", padx=(0, 4))
+        ang_var.trace_add("write", lambda *_, v=ang_var, i=idx: self._set_scene_field(i, "camera_angle", v.get()))
+
+        ttk.Label(row1, text="構圖", foreground=DARK_MUTED_FG).pack(side="left", padx=(0, 2))
+        comp_var = tk.StringVar(value=scene.composition)
+        cb_comp = ttk.Combobox(row1, textvariable=comp_var, values=COMPOSITIONS, width=10, state="readonly")
+        cb_comp.pack(side="left", padx=(0, 4))
+        comp_var.trace_add("write", lambda *_, v=comp_var, i=idx: self._set_scene_field(i, "composition", v.get()))
+
+        ttk.Separator(row1, orient="vertical").pack(side="left", fill="y", padx=4)
+
+        ttk.Label(row1, text="開始", foreground=DARK_MUTED_FG).pack(side="left", padx=(0, 2))
+        ss_var = tk.StringVar(value=scene.start_state)
+        ttk.Entry(row1, textvariable=ss_var, width=12).pack(side="left", padx=(0, 4))
+        ss_var.trace_add("write", lambda *_, v=ss_var, i=idx: self._set_scene_field(i, "start_state", v.get()))
+
+        ttk.Label(row1, text="動作", foreground=DARK_MUTED_FG).pack(side="left", padx=(0, 2))
+        ma_var = tk.StringVar(value=scene.main_action)
+        ttk.Entry(row1, textvariable=ma_var, width=14).pack(side="left", padx=(0, 4))
+        ma_var.trace_add("write", lambda *_, v=ma_var, i=idx: self._set_scene_field(i, "main_action", v.get()))
+
+        ttk.Label(row1, text="結束", foreground=DARK_MUTED_FG).pack(side="left", padx=(0, 2))
+        es_var = tk.StringVar(value=scene.end_state)
+        ttk.Entry(row1, textvariable=es_var, width=12).pack(side="left", padx=(0, 4))
+        es_var.trace_add("write", lambda *_, v=es_var, i=idx: self._set_scene_field(i, "end_state", v.get()))
+
+        ttk.Separator(row1, orient="vertical").pack(side="left", fill="y", padx=4)
+
+        ttk.Label(row1, text="情緒", foreground=DARK_MUTED_FG).pack(side="left", padx=(0, 2))
+        emo1 = scene.emotions[0] if scene.emotions else ""
+        emo_var = tk.StringVar(value=emo1)
+        cb_emo = ttk.Combobox(row1, textvariable=emo_var, values=[""] + EMOTIONS, width=6, state="readonly")
+        cb_emo.pack(side="left", padx=(0, 4))
+
+        def on_emo(e):
+            si = self._selected_scene
+            if si is not None and si < len(self.storyboard):
+                v = emo_var.get()
+                self.storyboard[si].emotions = [v] if v else []
+
+        cb_emo.bind("<<ComboboxSelected>>", on_emo)
+
+        ttk.Label(row1, text="環境動態", foreground=DARK_MUTED_FG).pack(side="left", padx=(0, 2))
+        dyn1 = scene.env_dynamics[0] if scene.env_dynamics else ""
+        dyn_var = tk.StringVar(value=dyn1)
+        cb_dyn = ttk.Combobox(row1, textvariable=dyn_var, values=[""] + ENV_DYNAMICS, width=10, state="readonly")
+        cb_dyn.pack(side="left", padx=(0, 4))
+
+        def on_dyn(e):
+            si = self._selected_scene
+            if si is not None and si < len(self.storyboard):
+                v = dyn_var.get()
+                cur_list = list(self.storyboard[si].env_dynamics)
+                if v and v not in cur_list:
+                    cur_list.append(v)
+                    self.storyboard[si].env_dynamics = cur_list
+                elif not v:
+                    self.storyboard[si].env_dynamics = []
+
+        cb_dyn.bind("<<ComboboxSelected>>", on_dyn)
+
+    def _set_scene_field(self, idx: int, field: str, value: str) -> None:
+        if 0 <= idx < len(self.storyboard):
+            setattr(self.storyboard[idx], field, value)
 
     def _build_char_detail(self, parent: ttk.Frame, idx: int) -> None:
         char = self.characters[idx]
         color = CHARACTER_COLORS[idx % len(CHARACTER_COLORS)]
-        ttk.Label(parent, text=f"角色 {idx + 1}",
+
+        # ── Row 0: identity ───────────────────────────────────────────────────
+        row0 = ttk.Frame(parent)
+        row0.pack(fill="x")
+
+        ttk.Label(row0, text=f"角色 {idx + 1}",
                   font=("Microsoft JhengHei UI", 9, "bold"),
-                  foreground=color).pack(side="left", padx=(4, 8))
-        ttk.Label(parent, text="名稱").pack(side="left")
+                  foreground=color).pack(side="left", padx=(4, 6))
+        ttk.Label(row0, text="名稱").pack(side="left")
         name_var = tk.StringVar(value=char.name if char.name != "角色" else f"角色{idx + 1}")
-        ttk.Entry(parent, textvariable=name_var, width=8).pack(side="left", padx=(2, 8))
+        ttk.Entry(row0, textvariable=name_var, width=8).pack(side="left", padx=(2, 6))
         name_var.trace_add("write", lambda *_, v=name_var, i=idx: setattr(self.characters[i], "name", v.get()))
-        ttk.Label(parent, text="性別").pack(side="left")
+
+        ttk.Label(row0, text="性別").pack(side="left")
         gender_var = tk.StringVar(value=char.gender)
-        ttk.Combobox(parent, textvariable=gender_var, values=["男", "女", "不限"],
-                     width=5, state="readonly").pack(side="left", padx=(2, 8))
+        ttk.Combobox(row0, textvariable=gender_var, values=["男", "女", "不限"],
+                     width=5, state="readonly").pack(side="left", padx=(2, 6))
         gender_var.trace_add("write", lambda *_, v=gender_var, i=idx: setattr(self.characters[i], "gender", v.get()))
-        ttk.Label(parent, text="年紀").pack(side="left")
+
+        ttk.Label(row0, text="年紀").pack(side="left")
         age_var = tk.StringVar(value=char.age)
-        ttk.Combobox(parent, textvariable=age_var,
+        ttk.Combobox(row0, textvariable=age_var,
                      values=["幼兒", "少年", "青年", "中年", "老年", "不限"],
-                     width=6, state="readonly").pack(side="left", padx=(2, 8))
+                     width=6, state="readonly").pack(side="left", padx=(2, 6))
         age_var.trace_add("write", lambda *_, v=age_var, i=idx: setattr(self.characters[i], "age", v.get()))
-        ttk.Label(parent, text="外觀").pack(side="left")
-        appear_var = tk.StringVar(value=char.appearance)
-        ttk.Entry(parent, textvariable=appear_var, width=14).pack(side="left", padx=(2, 8))
-        appear_var.trace_add("write", lambda *_, v=appear_var, i=idx: setattr(self.characters[i], "appearance", v.get()))
-        ttk.Separator(parent, orient="vertical").pack(side="left", fill="y", padx=6)
-        ttk.Button(parent, text="✕", width=2, command=self._delete_selected_character).pack(side="left", padx=(2, 0))
+
+        ttk.Separator(row0, orient="vertical").pack(side="left", fill="y", padx=4)
+        ttk.Button(row0, text="✕", width=2, command=self._delete_selected_character).pack(side="left", padx=(2, 0))
+
+        # ── Row 1: Character Bible ─────────────────────────────────────────────
+        row1 = ttk.Frame(parent)
+        row1.pack(fill="x", pady=(2, 0))
+
+        for lbl, attr, w in (
+            ("體型",   "body_type",      10),
+            ("髮型",   "hair",           10),
+            ("臉部",   "face",            8),
+            ("上衣",   "clothing_top",   10),
+            ("下身",   "clothing_bottom", 8),
+            ("鞋子",   "clothing_shoes",  8),
+            ("配件",   "accessories",    10),
+            ("自訂外觀", "appearance",   10),
+        ):
+            ttk.Label(row1, text=lbl, foreground=DARK_MUTED_FG).pack(side="left", padx=(4 if lbl == "體型" else 0, 2))
+            val = getattr(char, attr, "")
+            var = tk.StringVar(value=val)
+            ttk.Entry(row1, textvariable=var, width=w).pack(side="left", padx=(0, 5))
+            var.trace_add("write", lambda *_, v=var, i=idx, a=attr: setattr(self.characters[i], a, v.get()))
+
+        ttk.Separator(row1, orient="vertical").pack(side="left", fill="y", padx=4)
+        lock_var = tk.BooleanVar(value=getattr(char, "consistency_lock", True))
+        ttk.Checkbutton(row1, text="一致鎖定", variable=lock_var).pack(side="left", padx=(0, 4))
+        lock_var.trace_add("write", lambda *_, v=lock_var, i=idx: setattr(self.characters[i], "consistency_lock", v.get()))
+
+        ttk.Label(row1, text="一致性語", foreground=DARK_MUTED_FG).pack(side="left", padx=(0, 2))
+        ct_var = tk.StringVar(value=getattr(char, "consistency_terms", "same character design, consistent facial features"))
+        ttk.Entry(row1, textvariable=ct_var, width=30).pack(side="left", padx=(0, 4))
+        ct_var.trace_add("write", lambda *_, v=ct_var, i=idx: setattr(self.characters[i], "consistency_terms", v.get()))
 
     def _toggle_char_in_scene(self, char_idx: int) -> None:
         si = self._selected_scene
@@ -1839,6 +2007,131 @@ class LyricsSrtApp(tk.Tk):
         default_style = self.img_style_var.get() if self.img_style_var.get() in PROMPT_STYLES else "電影風"
         self.storyboard.append(StoryboardScene(shot_type="中景", style=default_style, tone="暖色"))
         self._draw_storyboard_canvas()
+
+    def _open_scene_groups_dialog(self) -> None:
+        dlg = tk.Toplevel(self)
+        dlg.title("場景群組管理")
+        dlg.geometry("680x400")
+        dlg.resizable(True, True)
+        dlg.grab_set()
+
+        left = ttk.Frame(dlg, width=180)
+        left.pack(side="left", fill="y", padx=(8, 0), pady=8)
+        left.pack_propagate(False)
+
+        ttk.Label(left, text="群組列表").pack(anchor="w")
+        listbox = tk.Listbox(left, selectmode="single", activestyle="none")
+        listbox.pack(fill="both", expand=True)
+        btns = ttk.Frame(left)
+        btns.pack(fill="x", pady=(4, 0))
+        ttk.Button(btns, text="＋ 新增", width=7,
+                   command=lambda: _new_group()).pack(side="left")
+        ttk.Button(btns, text="✕ 刪除", width=7,
+                   command=lambda: _del_group()).pack(side="left", padx=(4, 0))
+
+        right = ttk.Frame(dlg)
+        right.pack(side="left", fill="both", expand=True, padx=8, pady=8)
+
+        _fields: dict = {}
+
+        def _refresh_list():
+            listbox.delete(0, "end")
+            for sg in self.scene_groups:
+                listbox.insert("end", sg.name or sg.id or "（未命名）")
+
+        def _load_group(idx: int):
+            if idx < 0 or idx >= len(self.scene_groups):
+                return
+            sg = self.scene_groups[idx]
+            _fields["name_var"].set(sg.name)
+            _fields["loc_var"].set(sg.location)
+            _fields["time_var"].set(sg.scene_time)
+            _fields["weather_var"].set(sg.weather)
+            _fields["bg_var"].set(sg.bg_elements)
+            _fields["ep_var"].set(sg.environment_prompt)
+
+        def _save_group(idx: int):
+            if idx < 0 or idx >= len(self.scene_groups):
+                return
+            sg = self.scene_groups[idx]
+            sg.name = _fields["name_var"].get()
+            sg.location = _fields["loc_var"].get()
+            sg.scene_time = _fields["time_var"].get()
+            sg.weather = _fields["weather_var"].get()
+            sg.bg_elements = _fields["bg_var"].get()
+            sg.environment_prompt = _fields["ep_var"].get()
+            _refresh_list()
+            listbox.selection_set(idx)
+
+        def _on_select(e=None):
+            sel = listbox.curselection()
+            if sel:
+                _load_group(sel[0])
+
+        listbox.bind("<<ListboxSelect>>", _on_select)
+
+        def _new_group():
+            import uuid
+            sg = SceneGroup(id=str(uuid.uuid4())[:8], name=f"群組{len(self.scene_groups) + 1}")
+            self.scene_groups.append(sg)
+            _refresh_list()
+            listbox.selection_set(len(self.scene_groups) - 1)
+            _load_group(len(self.scene_groups) - 1)
+
+        def _del_group():
+            sel = listbox.curselection()
+            if not sel:
+                return
+            idx = sel[0]
+            del self.scene_groups[idx]
+            _refresh_list()
+            if self.scene_groups:
+                new_sel = max(0, idx - 1)
+                listbox.selection_set(new_sel)
+                _load_group(new_sel)
+
+        # Build right-side form
+        for row_i, (label, key, width, vals) in enumerate([
+            ("名稱", "name_var", 20, None),
+            ("地點", "loc_var",  20, None),
+            ("時段", "time_var", 12, TIMES_OF_DAY),
+            ("天氣", "weather_var", 12, WEATHER_OPTIONS),
+            ("背景元素", "bg_var", 30, None),
+        ]):
+            ttk.Label(right, text=label, width=6, anchor="e").grid(row=row_i, column=0, sticky="e", pady=3)
+            var = tk.StringVar()
+            _fields[key] = var
+            if vals:
+                ttk.Combobox(right, textvariable=var, values=vals, width=width,
+                             state="readonly").grid(row=row_i, column=1, sticky="w", padx=6)
+            else:
+                ttk.Entry(right, textvariable=var, width=width).grid(row=row_i, column=1, sticky="w", padx=6)
+
+        ttk.Label(right, text="環境提示詞", width=8, anchor="e").grid(row=5, column=0, sticky="ne", pady=3)
+        ep_var = tk.StringVar()
+        _fields["ep_var"] = ep_var
+        ep_txt = tk.Text(right, width=45, height=5)
+        ep_txt.grid(row=5, column=1, sticky="w", padx=6, pady=3)
+
+        # Override ep_var get/set to proxy through Text widget
+        class _TextVar:
+            def get(self_):
+                return ep_txt.get("1.0", "end").strip()
+            def set(self_, v):
+                ep_txt.delete("1.0", "end")
+                ep_txt.insert("1.0", v)
+        _fields["ep_var"] = _TextVar()
+
+        def _apply():
+            sel = listbox.curselection()
+            if sel:
+                _save_group(sel[0])
+        ttk.Button(right, text="套用", command=_apply).grid(row=6, column=1, sticky="w", padx=6, pady=6)
+
+        _refresh_list()
+        if self.scene_groups:
+            listbox.selection_set(0)
+            _load_group(0)
 
     def _add_character(self) -> None:
         i = len(self.characters)
@@ -1918,52 +2211,64 @@ class LyricsSrtApp(tk.Tk):
         )
         if not path:
             return
-        setting_desc = self._build_setting_desc()
-        age_map    = {"幼兒": "toddler", "少年": "teenager", "青年": "young adult",
-                      "中年": "middle-aged", "老年": "elderly"}
-        gender_map = {"男": "male", "女": "female", "男女混": "male and female", "不限": "any"}
-        lines = ["=== 分鏡表 ===", ""]
-        if setting_desc:
-            lines += [f"【場景設定】{setting_desc}", ""]
+        mode = self._model_mode
+        lines = [f"=== 分鏡表 ===  （輸出模式：{mode}）", ""]
         if self.characters:
             lines += ["【角色設定】"]
             for i, c in enumerate(self.characters):
                 name = c.name if c.name != "角色" else f"角色{i + 1}"
-                entry = f"  角色{i + 1}：{name}，{c.gender}，{c.age}"
-                if c.appearance:
-                    entry += f"，{c.appearance}"
-                lines.append(entry)
+                parts_c = [f"角色{i + 1}：{name}，{c.gender}，{c.age}"]
+                for attr, label in (
+                    ("body_type", "體型"), ("hair", "髮型"), ("face", "臉部"),
+                    ("clothing_top", "上衣"), ("clothing_bottom", "下身"),
+                    ("clothing_shoes", "鞋子"), ("accessories", "配件"),
+                    ("appearance", "外觀"),
+                ):
+                    v = getattr(c, attr, "")
+                    if v:
+                        parts_c.append(f"{label}={v}")
+                lines.append("  " + "，".join(parts_c))
+            lines.append("")
+        if self.scene_groups:
+            lines += ["【場景群組】"]
+            for sg in self.scene_groups:
+                lines.append(f"  [{sg.name}] {sg.location} / {sg.scene_time} / {sg.weather}")
+                if sg.environment_prompt:
+                    lines.append(f"    環境提示詞：{sg.environment_prompt}")
             lines.append("")
         for i, scene in enumerate(self.storyboard, 1):
             lines.append(f"【場景 {i}】")
-            lines.append(f"  鏡位：{scene.shot_type}（{SHOT_TYPE_EN.get(scene.shot_type, '')}）")
-            lines.append(f"  風格：{scene.style}")
-            lines.append(f"  色調：{scene.tone}（{COLOR_TONE_EN.get(scene.tone, '')}）")
-            if scene.lyric_texts:
-                lines.append("  歌詞：")
-                for lyr in scene.lyric_texts:
-                    lines.append(f"    {lyr}")
-            char_parts: list[str] = []
+            lines.append(f"  鏡位：{scene.shot_type}  風格：{scene.style}  色調：{scene.tone}")
+            char_names = []
             for ci in scene.char_indices:
                 if 0 <= ci < len(self.characters):
                     c = self.characters[ci]
-                    name = c.name if c.name != "角色" else f"character{ci + 1}"
-                    desc = f"{name} ({gender_map.get(c.gender, c.gender)}, {age_map.get(c.age, c.age)})"
-                    if c.appearance:
-                        desc += f", {c.appearance}"
-                    char_parts.append(desc)
-            style_desc = PROMPT_STYLES.get(scene.style, "high quality digital art")
-            shot_en    = SHOT_TYPE_EN.get(scene.shot_type, scene.shot_type)
-            tone_en    = COLOR_TONE_EN.get(scene.tone, scene.tone)
-            prompt_parts = [style_desc, shot_en, tone_en]
-            if char_parts:
-                prompt_parts.append("; ".join(char_parts))
-            if setting_desc:
-                prompt_parts.append(setting_desc)
+                    char_names.append(c.name if c.name != "角色" else f"角色{ci + 1}")
+            if char_names:
+                lines.append(f"  出場：{' / '.join(char_names)}")
             if scene.lyric_texts:
-                prompt_parts.append("scene: " + "／".join(scene.lyric_texts))
-            prompt_parts.append("masterpiece, best quality")
-            lines.append(f"  Prompt: {', '.join(prompt_parts)}")
+                lines.append("  歌詞：" + " ／ ".join(scene.lyric_texts))
+            cam_parts = [f"運鏡={scene.camera_movement}", f"角度={scene.camera_angle}",
+                         f"速度={scene.camera_speed}", f"穩定={scene.camera_stability}"]
+            if scene.composition and scene.composition != "（無）":
+                cam_parts.append(f"構圖={scene.composition}")
+            lines.append("  攝影：" + "，".join(cam_parts))
+            if scene.start_state or scene.main_action or scene.end_state:
+                lines.append(f"  動畫開始：{scene.start_state or '—'}")
+                lines.append(f"  主要動作：{scene.main_action or '—'}")
+                lines.append(f"  結束狀態：{scene.end_state or '—'}")
+            if scene.emotions:
+                lines.append(f"  情緒：{' / '.join(scene.emotions)}")
+            if scene.env_dynamics:
+                lines.append(f"  環境動態：{' / '.join(scene.env_dynamics)}")
+            # ── Assembled prompts ──────────────────────────────────────────────
+            img_p = assemble_image_prompt(scene, self.characters, self.scene_groups, self.production, mode)
+            vid_p = assemble_video_prompt(scene, self.characters, self.scene_groups, self.production, mode)
+            neg_p = assemble_negative_prompt(scene, mode)
+            lines.append(f"  [圖片 Prompt] {img_p}")
+            lines.append(f"  [動畫 Prompt] {vid_p}")
+            if neg_p:
+                lines.append(f"  [負面 Prompt] {neg_p}")
             lines.append("")
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
@@ -2426,14 +2731,46 @@ class LyricsSrtApp(tk.Tk):
                 {"image_path": c.image_path, "start": c.start, "end": c.end}
                 for c in self.image_clips
             ],
+            "schema_version": SCHEMA_VERSION,
+            "model_mode": self._model_mode,
             "storyboard": [
-                {"shot_type": s.shot_type, "style": s.style, "tone": s.tone,
-                 "lyrics": s.lyric_texts, "chars": s.char_indices}
+                {
+                    "shot_type": s.shot_type, "style": s.style, "tone": s.tone,
+                    "lyrics": s.lyric_texts, "chars": s.char_indices,
+                    "scene_group_id": s.scene_group_id,
+                    "scene_location": s.scene_location, "scene_time": s.scene_time,
+                    "weather": s.weather, "composition": s.composition,
+                    "orientation": s.orientation,
+                    "char_actions": s.char_actions, "char_expressions": s.char_expressions,
+                    "char_gaze": s.char_gaze,
+                    "camera_angle": s.camera_angle, "camera_movement": s.camera_movement,
+                    "camera_speed": s.camera_speed, "camera_stability": s.camera_stability,
+                    "start_state": s.start_state, "main_action": s.main_action,
+                    "end_state": s.end_state,
+                    "emotions": s.emotions, "env_dynamics": s.env_dynamics,
+                    "negative_opts": s.negative_opts,
+                }
                 for s in self.storyboard
             ],
             "characters": [
-                {"name": c.name, "age": c.age, "gender": c.gender, "appearance": c.appearance}
+                {
+                    "name": c.name, "age": c.age, "gender": c.gender,
+                    "appearance": c.appearance,
+                    "body_type": c.body_type, "hair": c.hair, "face": c.face,
+                    "clothing_top": c.clothing_top, "clothing_bottom": c.clothing_bottom,
+                    "clothing_shoes": c.clothing_shoes, "accessories": c.accessories,
+                    "consistency_lock": c.consistency_lock,
+                    "consistency_terms": c.consistency_terms,
+                }
                 for c in self.characters
+            ],
+            "scene_groups": [
+                {
+                    "id": sg.id, "name": sg.name, "location": sg.location,
+                    "scene_time": sg.scene_time, "weather": sg.weather,
+                    "bg_elements": sg.bg_elements, "environment_prompt": sg.environment_prompt,
+                }
+                for sg in self.scene_groups
             ],
             "scene_pos": [[p[0], p[1]] if p else None for p in self._scene_pos],
             "char_pos":  [[p[0], p[1]] if p else None for p in self._char_pos],
@@ -2510,6 +2847,9 @@ class LyricsSrtApp(tk.Tk):
                         start=float(cd["start"]),
                         end=float(cd["end"]),
                     ))
+            self._model_mode = data.get("model_mode", "通用")
+            if hasattr(self, "_model_mode_var"):
+                self._model_mode_var.set(self._model_mode)
             self.storyboard.clear()
             for sd in data.get("storyboard", []):
                 self.storyboard.append(StoryboardScene(
@@ -2518,6 +2858,25 @@ class LyricsSrtApp(tk.Tk):
                     tone=sd.get("tone", "暖色"),
                     lyric_texts=list(sd.get("lyrics", [])),
                     char_indices=list(sd.get("chars", [])),
+                    scene_group_id=sd.get("scene_group_id", ""),
+                    scene_location=sd.get("scene_location", "（無）"),
+                    scene_time=sd.get("scene_time", "不指定"),
+                    weather=sd.get("weather", "不指定"),
+                    composition=sd.get("composition", "（無）"),
+                    orientation=sd.get("orientation", "（無）"),
+                    char_actions=dict(sd.get("char_actions", {})),
+                    char_expressions=dict(sd.get("char_expressions", {})),
+                    char_gaze=dict(sd.get("char_gaze", {})),
+                    camera_angle=sd.get("camera_angle", "平視"),
+                    camera_movement=sd.get("camera_movement", "固定"),
+                    camera_speed=sd.get("camera_speed", "緩慢"),
+                    camera_stability=sd.get("camera_stability", "穩定"),
+                    start_state=sd.get("start_state", ""),
+                    main_action=sd.get("main_action", ""),
+                    end_state=sd.get("end_state", ""),
+                    emotions=list(sd.get("emotions", [])),
+                    env_dynamics=list(sd.get("env_dynamics", [])),
+                    negative_opts=list(sd.get("negative_opts", [])),
                 ))
             self.characters.clear()
             for cd in data.get("characters", []):
@@ -2526,6 +2885,26 @@ class LyricsSrtApp(tk.Tk):
                     age=cd.get("age", "青年"),
                     gender=cd.get("gender", "男"),
                     appearance=cd.get("appearance", ""),
+                    body_type=cd.get("body_type", ""),
+                    hair=cd.get("hair", ""),
+                    face=cd.get("face", ""),
+                    clothing_top=cd.get("clothing_top", ""),
+                    clothing_bottom=cd.get("clothing_bottom", ""),
+                    clothing_shoes=cd.get("clothing_shoes", ""),
+                    accessories=cd.get("accessories", ""),
+                    consistency_lock=cd.get("consistency_lock", True),
+                    consistency_terms=cd.get("consistency_terms", "same character design, consistent facial features"),
+                ))
+            self.scene_groups.clear()
+            for gd in data.get("scene_groups", []):
+                self.scene_groups.append(SceneGroup(
+                    id=gd.get("id", ""),
+                    name=gd.get("name", ""),
+                    location=gd.get("location", ""),
+                    scene_time=gd.get("scene_time", "不指定"),
+                    weather=gd.get("weather", "不指定"),
+                    bg_elements=gd.get("bg_elements", ""),
+                    environment_prompt=gd.get("environment_prompt", ""),
                 ))
             self._scene_pos = [
                 (float(p[0]), float(p[1])) if p else None
