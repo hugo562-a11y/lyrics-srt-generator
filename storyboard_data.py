@@ -77,9 +77,11 @@ CAMERA_STABILITY_EN: dict[str, str] = {
 # ── Composition & orientation ─────────────────────────────────────────────────
 
 COMPOSITIONS = [
-    "（無）", "爸爸居中孩子左右", "爸爸左孩子右", "三人並排",
-    "爸爸前孩子後", "孩子前爸爸後", "三角構圖", "對稱構圖",
-    "三分法", "中央構圖", "前景框景",
+    "（無）",
+    "三分法", "中央構圖", "對稱構圖", "三角構圖",
+    "引導線", "前景框景", "黃金比例",
+    "主體偏左", "主體偏右", "主體偏上", "主體偏下",
+    "並排", "一前一後", "群體縱深",
 ]
 ORIENTATIONS = [
     "（無）", "正面", "側面", "背面", "三分之二側面",
@@ -87,16 +89,20 @@ ORIENTATIONS = [
 ]
 COMPOSITIONS_EN: dict[str, str] = {
     "（無）": "",
-    "爸爸居中孩子左右": "father centered with children on both sides",
-    "爸爸左孩子右": "father on the left, children on the right",
-    "三人並排": "three subjects side by side",
-    "爸爸前孩子後": "father in foreground, children behind",
-    "孩子前爸爸後": "children in foreground, father behind",
-    "三角構圖": "triangular composition",
-    "對稱構圖": "symmetrical composition",
     "三分法": "rule of thirds",
     "中央構圖": "centered composition",
+    "對稱構圖": "symmetrical composition",
+    "三角構圖": "triangular composition",
+    "引導線": "leading lines composition",
     "前景框景": "foreground framing",
+    "黃金比例": "golden ratio composition",
+    "主體偏左": "subject positioned on the left",
+    "主體偏右": "subject positioned on the right",
+    "主體偏上": "subject positioned in the upper frame",
+    "主體偏下": "subject positioned in the lower frame",
+    "並排": "subjects side by side",
+    "一前一後": "one subject in foreground, one behind",
+    "群體縱深": "group with layered depth",
 }
 ORIENTATIONS_EN: dict[str, str] = {
     "（無）": "",
@@ -108,6 +114,57 @@ ORIENTATIONS_EN: dict[str, str] = {
     "面向夕陽": "facing the sunset",
     "面向遠方": "gazing into the distance",
 }
+
+# ── Character Bible presets ───────────────────────────────────────────────────
+
+BODY_TYPES = [
+    "（無）", "纖細", "苗條", "普通", "高挑", "矮小",
+    "壯碩", "健美", "略胖", "豐腴",
+]
+HAIR_STYLES = [
+    "（無）",
+    "黑色短髮", "黑色中長髮", "黑色長直髮", "黑色馬尾", "黑色捲髮", "黑色雙馬尾",
+    "棕色短髮", "棕色長直髮", "棕色捲髮",
+    "金色短髮", "金色長髮", "金色捲髮",
+    "白色短髮", "白色長髮",
+    "深色馬尾", "深色雙馬尾", "深色辮子",
+    "光頭",
+]
+FACE_FEATURES = [
+    "（無）", "清秀俊朗", "帥氣", "可愛", "甜美", "成熟穩重",
+    "圓臉", "瓜子臉", "方臉", "娃娃臉",
+    "深邃眼神", "溫柔眼神", "眼神堅定", "眉目清秀",
+]
+TOP_STYLES = [
+    "（無）",
+    "白T恤", "黑T恤", "灰T恤",
+    "白色襯衫", "格紋襯衫", "紅色格紋襯衫",
+    "連帽外套", "牛仔外套", "夾克",
+    "西裝外套", "毛衣", "無袖背心", "風衣",
+    "紅色披風",
+]
+BOTTOM_STYLES = [
+    "（無）",
+    "牛仔褲", "黑色牛仔褲", "淺色牛仔褲",
+    "休閒長褲", "西裝褲", "運動褲",
+    "短褲", "裙子", "長裙", "百褶裙",
+]
+SHOE_STYLES = [
+    "（無）",
+    "白色運動鞋", "黑色運動鞋", "彩色運動鞋",
+    "皮鞋", "黑色皮鞋",
+    "涼鞋", "拖鞋",
+    "靴子", "短靴", "休閒鞋",
+]
+ACCESSORY_OPTIONS = [
+    "（無）",
+    "眼鏡", "太陽眼鏡",
+    "手錶", "腕表",
+    "項鍊", "戒指", "手環", "耳環",
+    "棒球帽", "毛帽", "頭帶",
+    "背包",
+    "耳機", "圍巾",
+]
 
 # ── Actions, expressions, gaze ────────────────────────────────────────────────
 
@@ -271,7 +328,7 @@ SCENE_TEMPLATES: dict[str, dict] = {
             "camera_angle": "低角度", "camera_movement": "慢速推近",
             "camera_speed": "緩慢", "camera_stability": "穩定",
             "env_dynamics": ["披風隨風飄動"], "emotions": ["英雄感", "溫馨"],
-            "composition": "爸爸居中孩子左右",
+            "composition": "三角構圖",
         },
     },
     "家庭互動": {
@@ -280,7 +337,7 @@ SCENE_TEMPLATES: dict[str, dict] = {
             "scene_location": "河濱公園", "scene_time": "下午",
             "camera_movement": "平穩跟拍", "camera_speed": "緩慢",
             "camera_stability": "穩定", "emotions": ["溫馨", "幸福"],
-            "composition": "爸爸居中孩子左右",
+            "composition": "並排",
         },
     },
     "情感擁抱": {

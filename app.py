@@ -32,6 +32,8 @@ from storyboard_data import (
     NEGATIVE_OPTIONS, ACTIONS_GENERAL, EXPRESSIONS, GAZE_OPTIONS,
     SCENE_LOCATIONS, TIMES_OF_DAY, WEATHER_OPTIONS,
     MODEL_MODE_NAMES,
+    BODY_TYPES, HAIR_STYLES, FACE_FEATURES,
+    TOP_STYLES, BOTTOM_STYLES, SHOE_STYLES, ACCESSORY_OPTIONS,
 )
 from prompt_assembler import assemble_image_prompt, assemble_video_prompt, assemble_negative_prompt
 
@@ -1945,20 +1947,25 @@ class LyricsSrtApp(tk.Tk):
         row1 = ttk.Frame(parent)
         row1.pack(fill="x", pady=(2, 0))
 
-        for lbl, attr, w in (
-            ("體型",   "body_type",      10),
-            ("髮型",   "hair",           10),
-            ("臉部",   "face",            8),
-            ("上衣",   "clothing_top",   10),
-            ("下身",   "clothing_bottom", 8),
-            ("鞋子",   "clothing_shoes",  8),
-            ("配件",   "accessories",    10),
-            ("自訂外觀", "appearance",   10),
+        for lbl, attr, w, opts in (
+            ("體型",    "body_type",       9,  BODY_TYPES),
+            ("髮型",    "hair",           13,  HAIR_STYLES),
+            ("臉部",    "face",            9,  FACE_FEATURES),
+            ("上衣",    "clothing_top",   11,  TOP_STYLES),
+            ("下身",    "clothing_bottom", 9,  BOTTOM_STYLES),
+            ("鞋子",    "clothing_shoes",  9,  SHOE_STYLES),
+            ("配件",    "accessories",     9,  ACCESSORY_OPTIONS),
+            ("自訂外觀", "appearance",    12,  None),
         ):
-            ttk.Label(row1, text=lbl, foreground=DARK_MUTED_FG).pack(side="left", padx=(4 if lbl == "體型" else 0, 2))
+            ttk.Label(row1, text=lbl, foreground=DARK_MUTED_FG).pack(
+                side="left", padx=(4 if lbl == "體型" else 0, 2))
             val = getattr(char, attr, "")
             var = tk.StringVar(value=val)
-            ttk.Entry(row1, textvariable=var, width=w).pack(side="left", padx=(0, 5))
+            if opts is not None:
+                ttk.Combobox(row1, textvariable=var, values=opts, width=w,
+                             state="readonly").pack(side="left", padx=(0, 4))
+            else:
+                ttk.Entry(row1, textvariable=var, width=w).pack(side="left", padx=(0, 4))
             var.trace_add("write", lambda *_, v=var, i=idx, a=attr: setattr(self.characters[i], a, v.get()))
 
         ttk.Separator(row1, orient="vertical").pack(side="left", fill="y", padx=4)
