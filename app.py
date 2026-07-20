@@ -1108,12 +1108,6 @@ class LyricsSrtApp(tk.Tk):
         img_style_combo = ttk.Combobox(img_frame, textvariable=self.img_style_var, state="readonly", width=8, values=tuple(PROMPT_STYLES))
         img_style_combo.grid(row=r2, column=3, sticky="w", pady=(0, 4))
 
-        r2 = 1
-        ttk.Label(img_frame, text="API Key").grid(row=r2, column=0, sticky="w", padx=(0, 4))
-        api_key_entry = ttk.Entry(img_frame, textvariable=self.img_api_key_var, show="*", width=28)
-        api_key_entry.grid(row=r2, column=1, columnspan=3, sticky="ew", pady=(0, 4))
-        ttk.Button(img_frame, text="測試", command=self._test_img_api, width=5).grid(row=r2, column=4, padx=(4, 0), pady=(0, 4))
-
         r2 = 2
         self.img_scene_btn = ttk.Button(img_frame, text="生成場景影像提示詞", command=self._start_scene_prompt_gen)
         self.img_scene_btn.grid(row=r2, column=0, columnspan=3, sticky="ew", pady=(4, 0))
