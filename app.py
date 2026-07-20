@@ -14,7 +14,7 @@ import tempfile
 import threading
 import time
 import tkinter as tk
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from tkinter import colorchooser, filedialog, messagebox, ttk
 from typing import Iterable
@@ -86,6 +86,36 @@ class Segment:
     kind: str
     text: str
     deleted: bool = False
+
+
+SHOT_TYPES = ["大遠景", "遠景", "全景", "中景", "中近景", "近景", "特寫", "俯拍", "仰拍", "主觀"]
+COLOR_TONES = ["暖色", "冷色", "黑白", "復古", "高反差", "低飽和", "夕陽橙", "夜藍", "霓虹"]
+
+SHOT_TYPE_EN: dict[str, str] = {
+    "大遠景": "extreme long shot", "遠景": "long shot", "全景": "full shot",
+    "中景": "medium shot", "中近景": "medium close-up", "近景": "close-up",
+    "特寫": "extreme close-up", "俯拍": "bird's eye view",
+    "仰拍": "low angle shot", "主觀": "POV shot",
+}
+COLOR_TONE_EN: dict[str, str] = {
+    "暖色": "warm color tones, golden light",
+    "冷色": "cool blue tones, cold atmosphere",
+    "黑白": "black and white, monochrome",
+    "復古": "vintage film look, retro colors, aged",
+    "高反差": "high contrast, dramatic shadows",
+    "低飽和": "desaturated, muted colors",
+    "夕陽橙": "golden hour, sunset orange glow",
+    "夜藍": "night blue, midnight atmosphere",
+    "霓虹": "neon lights, vibrant glowing colors",
+}
+
+
+@dataclass
+class StoryboardScene:
+    shot_type: str = "中景"
+    style: str = "電影風"
+    tone: str = "暖色"
+    lyric_texts: list = field(default_factory=list)
 
 
 def format_timecode(seconds: float) -> str:
@@ -755,6 +785,8 @@ class LyricsSrtApp(tk.Tk):
         self.preview_photo: object | None = None
         self.image_clips: list[ImageClip] = []
         self._img_bg_cache: tuple[str, object] | None = None
+        self.storyboard: list[StoryboardScene] = []
+        self._sb_inner: tk.Frame | None = None
         self.subtitle_font_size_var = tk.IntVar(value=64)
         self.subtitle_text_color = "#f6f7f4"
         self.subtitle_outline_color = "#100c09"
@@ -1000,21 +1032,34 @@ class LyricsSrtApp(tk.Tk):
         ttk.Button(img_track_bar, text="＋ 匯入影像", command=self._import_image_clip, width=10).pack(side="left", padx=(4, 0))
         ttk.Label(img_track_bar, text="（雙擊影像片段可刪除）", foreground=DARK_MUTED_FG).pack(side="left", padx=(6, 0))
 
-        body = ttk.LabelFrame(center, text=" 歌詞時間軸 ", padding=(8, 4))
+        body = ttk.LabelFrame(center, text=" 歌詞時間軸 ╱ 分鏡表 ", padding=(8, 4))
         body.grid(row=1, column=0, sticky="nsew")
-        body.columnconfigure(0, weight=1)
+        body.columnconfigure(0, weight=2)
+        body.columnconfigure(2, weight=3)
         body.rowconfigure(0, weight=1)
+
+        left_pane = ttk.Frame(body)
+        left_pane.grid(row=0, column=0, sticky="nsew")
+        left_pane.columnconfigure(0, weight=1)
+        left_pane.rowconfigure(0, weight=1)
         columns = ("start", "end", "kind", "text")
-        self.tree = ttk.Treeview(body, columns=columns, show="headings", selectmode="browse")
-        for key, title, width in (("start", "開始", 130), ("end", "結束", 130), ("kind", "類型", 80), ("text", "文字／標記", 420)):
+        self.tree = ttk.Treeview(left_pane, columns=columns, show="headings", selectmode="browse")
+        for key, title, width in (("start", "開始", 90), ("end", "結束", 90), ("kind", "類型", 60), ("text", "文字", 180)):
             self.tree.heading(key, text=title)
             self.tree.column(key, width=width, anchor="center" if key != "text" else "w", stretch=key == "text")
         self.tree.grid(row=0, column=0, sticky="nsew")
-        scroll = ttk.Scrollbar(body, orient="vertical", command=self.tree.yview)
+        scroll = ttk.Scrollbar(left_pane, orient="vertical", command=self.tree.yview)
         scroll.grid(row=0, column=1, sticky="ns")
         self.tree.configure(yscrollcommand=scroll.set)
         self.tree.bind("<ButtonRelease-1>", self.play_clicked_row)
         self.tree.bind("<Double-1>", self._begin_edit)
+        self.tree.bind("<Button-3>", self._tree_right_click)
+
+        ttk.Separator(body, orient="vertical").grid(row=0, column=1, sticky="ns", padx=4)
+
+        right_pane = ttk.Frame(body)
+        right_pane.grid(row=0, column=2, sticky="nsew")
+        self._build_storyboard_panel(right_pane)
 
         # ── 右側：字幕預覽 + 字幕樣式 ──────────────────────────────
         right = ttk.Frame(self)
@@ -1101,18 +1146,15 @@ class LyricsSrtApp(tk.Tk):
         img_frame.columnconfigure(4, weight=1)
 
         r2 = 0
-        ttk.Label(img_frame, text="服務").grid(row=r2, column=0, sticky="w", padx=(0, 4))
-        provider_combo = ttk.Combobox(img_frame, textvariable=self.img_provider_var, state="readonly", width=8, values=("openai", "gemini"))
-        provider_combo.grid(row=r2, column=1, sticky="w", pady=(0, 4))
-        ttk.Label(img_frame, text="風格").grid(row=r2, column=2, sticky="w", padx=(8, 4))
-        img_style_combo = ttk.Combobox(img_frame, textvariable=self.img_style_var, state="readonly", width=8, values=tuple(PROMPT_STYLES))
-        img_style_combo.grid(row=r2, column=3, sticky="w", pady=(0, 4))
+        ttk.Label(img_frame, text="風格").grid(row=r2, column=0, sticky="w", padx=(0, 4))
+        img_style_combo = ttk.Combobox(img_frame, textvariable=self.img_style_var, state="readonly", width=10, values=tuple(PROMPT_STYLES))
+        img_style_combo.grid(row=r2, column=1, sticky="w", pady=(0, 4))
 
-        r2 = 2
+        r2 = 1
         self.img_scene_btn = ttk.Button(img_frame, text="生成場景影像提示詞", command=self._start_scene_prompt_gen)
-        self.img_scene_btn.grid(row=r2, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+        self.img_scene_btn.grid(row=r2, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         self.img_export_btn = ttk.Button(img_frame, text="匯出歌詞影片（需先生成影像）", command=self._export_lyric_video)
-        self.img_export_btn.grid(row=r2, column=3, columnspan=2, sticky="ew", pady=(4, 0), padx=(4, 0))
+        self.img_export_btn.grid(row=r2, column=2, columnspan=2, sticky="ew", pady=(4, 0), padx=(4, 0))
 
         # ── 底部列：播放控制 + 匯出 ──────────────────────────────────
         bottom = ttk.Frame(self, padding=(14, 6, 14, 12))
@@ -1307,6 +1349,170 @@ class LyricsSrtApp(tk.Tk):
 
     def _on_image_clip_change(self) -> None:
         self._refresh_preview()
+
+    # ── 分鏡表 ──────────────────────────────────────────────────────────────────
+
+    def _build_storyboard_panel(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(1, weight=1)
+
+        tb = ttk.Frame(parent)
+        tb.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 4))
+        ttk.Label(tb, text="分鏡表", font=("Microsoft JhengHei UI", 9, "bold")).pack(side="left")
+        ttk.Button(tb, text="＋ 新增", command=self._add_scene, width=7).pack(side="left", padx=(8, 0))
+        ttk.Button(tb, text="匯出 TXT", command=self._export_storyboard, width=9).pack(side="right")
+
+        canvas = tk.Canvas(parent, background=DARK_BG, highlightthickness=0, bd=0)
+        canvas.grid(row=1, column=0, sticky="nsew")
+        sb = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        sb.grid(row=1, column=1, sticky="ns")
+        canvas.configure(yscrollcommand=sb.set)
+
+        inner = tk.Frame(canvas, background=DARK_BG)
+        win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(win_id, width=e.width))
+        canvas.bind("<MouseWheel>", lambda e: canvas.yview_scroll(-1 * (e.delta // 120), "units"))
+        inner.bind("<MouseWheel>", lambda e: canvas.yview_scroll(-1 * (e.delta // 120), "units"))
+
+        self._sb_inner = inner
+        self._refresh_storyboard()
+
+    def _refresh_storyboard(self) -> None:
+        if self._sb_inner is None:
+            return
+        for w in self._sb_inner.winfo_children():
+            w.destroy()
+        if not self.storyboard:
+            tk.Label(
+                self._sb_inner,
+                text="點「＋ 新增」新增場景\n選取左側歌詞後右鍵→加入場景",
+                foreground=DARK_MUTED_FG, background=DARK_BG,
+                justify="center", font=("Microsoft JhengHei UI", 9),
+            ).pack(pady=24, padx=8)
+            return
+        from image_generator import STYLE_PRESETS
+        style_keys = list(STYLE_PRESETS.keys())
+        for i, scene in enumerate(self.storyboard):
+            self._build_scene_row(self._sb_inner, i, scene, style_keys)
+
+    def _build_scene_row(self, parent: tk.Frame, i: int, scene: StoryboardScene, style_keys: list) -> None:
+        _bg = DARK_PANEL
+        frame = tk.Frame(parent, background=_bg, bd=1, relief="groove")
+        frame.pack(fill="x", pady=3, padx=4)
+
+        hdr = tk.Frame(frame, background=_bg)
+        hdr.pack(fill="x", padx=4, pady=(4, 0))
+        tk.Label(hdr, text=f"場景 {i + 1}", background=_bg, foreground=DARK_FG,
+                 font=("Microsoft JhengHei UI", 9, "bold")).pack(side="left")
+        for btn_text, cmd in (
+            ("✕", lambda idx=i: self._delete_scene(idx)),
+            ("↓", lambda idx=i: self._move_scene(idx, 1)),
+            ("↑", lambda idx=i: self._move_scene(idx, -1)),
+        ):
+            ttk.Button(hdr, text=btn_text, width=2, command=cmd).pack(side="right", padx=1)
+
+        lyric_display = "、".join(scene.lyric_texts) if scene.lyric_texts else "（右鍵左側歌詞→加入此場景）"
+        lyric_fg = "#7ea8c8" if scene.lyric_texts else DARK_MUTED_FG
+        tk.Label(frame, text=lyric_display, background=_bg, foreground=lyric_fg,
+                 font=("Microsoft JhengHei UI", 9), wraplength=210,
+                 justify="left", anchor="w").pack(fill="x", padx=4, pady=(2, 4))
+
+        settings = tk.Frame(frame, background=_bg)
+        settings.pack(fill="x", padx=4, pady=(0, 4))
+        for label, fld, values, current in (
+            ("鏡位", "shot_type", SHOT_TYPES, scene.shot_type),
+            ("風格", "style", style_keys, scene.style),
+            ("色調", "tone", COLOR_TONES, scene.tone),
+        ):
+            tk.Label(settings, text=label, background=_bg, foreground=DARK_MUTED_FG,
+                     font=("Microsoft JhengHei UI", 8)).pack(side="left", padx=(0, 1))
+            var = tk.StringVar(value=current)
+            cb = ttk.Combobox(settings, textvariable=var, values=values, width=6, state="readonly")
+            cb.pack(side="left", padx=(0, 5))
+            var.trace_add("write", lambda *_, idx=i, f=fld, v=var: self._update_scene_field(idx, f, v.get()))
+
+    def _add_scene(self) -> None:
+        from image_generator import STYLE_PRESETS
+        default_style = self.img_style_var.get() if self.img_style_var.get() in STYLE_PRESETS else "電影風"
+        self.storyboard.append(StoryboardScene(shot_type="中景", style=default_style, tone="暖色"))
+        self._refresh_storyboard()
+
+    def _delete_scene(self, idx: int) -> None:
+        if 0 <= idx < len(self.storyboard):
+            del self.storyboard[idx]
+            self._refresh_storyboard()
+
+    def _move_scene(self, idx: int, direction: int) -> None:
+        new_idx = idx + direction
+        if 0 <= new_idx < len(self.storyboard):
+            self.storyboard[idx], self.storyboard[new_idx] = self.storyboard[new_idx], self.storyboard[idx]
+            self._refresh_storyboard()
+
+    def _update_scene_field(self, idx: int, field: str, value: str) -> None:
+        if 0 <= idx < len(self.storyboard):
+            setattr(self.storyboard[idx], field, value)
+
+    def _tree_right_click(self, event: tk.Event) -> None:
+        item = self.tree.identify_row(event.y)
+        if not item:
+            return
+        self.tree.selection_set(item)
+        menu = tk.Menu(self, tearoff=0)
+        if not self.storyboard:
+            menu.add_command(label="先新增場景（分鏡表）再指定", state="disabled")
+        else:
+            for i, scene in enumerate(self.storyboard):
+                preview = ("、".join(scene.lyric_texts[:2]) + "…") if scene.lyric_texts else "（空）"
+                menu.add_command(
+                    label=f"加入場景 {i + 1}  {preview}",
+                    command=lambda item_id=item, idx=i: self._assign_lyric_to_scene(item_id, idx),
+                )
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _assign_lyric_to_scene(self, tree_item: str, scene_idx: int) -> None:
+        values = self.tree.item(tree_item, "values")
+        if not values or len(values) < 4:
+            return
+        text = str(values[3])
+        if text and text not in self.storyboard[scene_idx].lyric_texts:
+            self.storyboard[scene_idx].lyric_texts.append(text)
+            self._refresh_storyboard()
+
+    def _export_storyboard(self) -> None:
+        if not self.storyboard:
+            messagebox.showwarning(APP_TITLE, "分鏡表是空的，請先新增場景。")
+            return
+        path = filedialog.asksaveasfilename(
+            title="儲存分鏡表",
+            defaultextension=".txt",
+            filetypes=[("文字檔", "*.txt"), ("所有檔案", "*.*")],
+        )
+        if not path:
+            return
+        from image_generator import STYLE_PRESETS
+        lines = ["=== 分鏡表 ===", ""]
+        for i, scene in enumerate(self.storyboard, 1):
+            lines.append(f"【場景 {i}】")
+            lines.append(f"  鏡位：{scene.shot_type}（{SHOT_TYPE_EN.get(scene.shot_type, '')}）")
+            lines.append(f"  風格：{scene.style}")
+            lines.append(f"  色調：{scene.tone}（{COLOR_TONE_EN.get(scene.tone, '')}）")
+            if scene.lyric_texts:
+                lines.append("  歌詞：")
+                for lyr in scene.lyric_texts:
+                    lines.append(f"    {lyr}")
+            style_desc = STYLE_PRESETS.get(scene.style, "high quality digital art")
+            shot_en = SHOT_TYPE_EN.get(scene.shot_type, scene.shot_type)
+            tone_en = COLOR_TONE_EN.get(scene.tone, scene.tone)
+            prompt_parts = [style_desc, shot_en, tone_en]
+            if scene.lyric_texts:
+                prompt_parts.append("scene: " + "／".join(scene.lyric_texts))
+            prompt_parts.append("masterpiece, best quality")
+            lines.append(f"  Prompt: {', '.join(prompt_parts)}")
+            lines.append("")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+        messagebox.showinfo(APP_TITLE, f"分鏡表已儲存：{path}")
 
     def _waveform_edit(self, index: int, edge: str, value: float) -> None:
         if not (0 <= index < len(self.segments)):
@@ -1765,6 +1971,10 @@ class LyricsSrtApp(tk.Tk):
                 {"image_path": c.image_path, "start": c.start, "end": c.end}
                 for c in self.image_clips
             ],
+            "storyboard": [
+                {"shot_type": s.shot_type, "style": s.style, "tone": s.tone, "lyrics": s.lyric_texts}
+                for s in self.storyboard
+            ],
         }
         with open(output, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -1833,6 +2043,15 @@ class LyricsSrtApp(tk.Tk):
                         start=float(cd["start"]),
                         end=float(cd["end"]),
                     ))
+            self.storyboard.clear()
+            for sd in data.get("storyboard", []):
+                self.storyboard.append(StoryboardScene(
+                    shot_type=sd.get("shot_type", "中景"),
+                    style=sd.get("style", "電影風"),
+                    tone=sd.get("tone", "暖色"),
+                    lyric_texts=list(sd.get("lyrics", [])),
+                ))
+            self._refresh_storyboard()
             self.waveform._redraw()
             self.refresh_tree()
             self._refresh_preview()
