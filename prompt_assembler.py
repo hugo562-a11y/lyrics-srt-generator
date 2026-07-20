@@ -42,8 +42,9 @@ def assemble_image_prompt(scene, characters, scene_groups, production, model_mod
     if char_desc:
         parts.append(char_desc)
 
-    # Composition
-    comp_en = COMPOSITIONS_EN.get(getattr(scene, "composition", "（無）"), "")
+    # Composition — generic keys look up EN; dynamic char-position values used verbatim
+    comp_raw = getattr(scene, "composition", "（無）")
+    comp_en = COMPOSITIONS_EN.get(comp_raw, comp_raw if comp_raw not in ("（無）", "", "── 角色位置 ──") else "")
     if comp_en:
         parts.append(comp_en)
 

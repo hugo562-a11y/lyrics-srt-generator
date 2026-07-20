@@ -1851,7 +1851,8 @@ class LyricsSrtApp(tk.Tk):
 
         ttk.Label(row1, text="構圖", foreground=DARK_MUTED_FG).pack(side="left", padx=(0, 2))
         comp_var = tk.StringVar(value=scene.composition)
-        cb_comp = ttk.Combobox(row1, textvariable=comp_var, values=COMPOSITIONS, width=10, state="readonly")
+        cb_comp = ttk.Combobox(row1, textvariable=comp_var,
+                               values=self._make_comp_options(scene), width=16, state="readonly")
         cb_comp.pack(side="left", padx=(0, 4))
         comp_var.trace_add("write", lambda *_, v=comp_var, i=idx: self._set_scene_field(i, "composition", v.get()))
 
@@ -1906,6 +1907,42 @@ class LyricsSrtApp(tk.Tk):
                     self.storyboard[si].env_dynamics = []
 
         cb_dyn.bind("<<ComboboxSelected>>", on_dyn)
+
+    def _make_comp_options(self, scene) -> list:
+        generic = [
+            "（無）", "三分法", "中央構圖", "對稱構圖", "三角構圖",
+            "引導線", "前景框景", "黃金比例",
+            "主體偏左", "主體偏右", "主體偏上",
+            "並排", "一前一後", "群體縱深",
+        ]
+        names = []
+        for ci in scene.char_indices:
+            if 0 <= ci < len(self.characters):
+                c = self.characters[ci]
+                names.append(c.name if c.name != "角色" else f"角色{ci + 1}")
+        dynamic: list = []
+        n = len(names)
+        if n == 1:
+            nm = names[0]
+            dynamic += [f"{nm}居中", f"{nm}偏左", f"{nm}偏右"]
+        elif n == 2:
+            a, b = names[0], names[1]
+            dynamic += [f"{a}左{b}右", f"{b}左{a}右",
+                        f"{a}前{b}後", f"{b}前{a}後",
+                        f"{a}{b}並排"]
+        elif n >= 3:
+            a, b, c = names[0], names[1], names[2]
+            dynamic += [
+                f"{a}居中{b}左{c}右", f"{b}居中{a}左{c}右", f"{c}居中{a}左{b}右",
+                f"{a}前{b}{c}後", f"{''.join(names[:3])}並排",
+            ]
+            if n > 3:
+                dynamic.append(f"{''.join(names)}並排")
+        opts = generic + (["── 角色位置 ──"] + dynamic if dynamic else [])
+        cur = getattr(scene, "composition", "（無）")
+        if cur and cur not in opts:
+            opts.insert(1, cur)
+        return opts
 
     def _set_scene_field(self, idx: int, field: str, value: str) -> None:
         if 0 <= idx < len(self.storyboard):
