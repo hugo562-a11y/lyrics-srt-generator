@@ -116,24 +116,31 @@ class StoryboardScene:
     style: str = "電影風"
     tone: str = "暖色"
     lyric_texts: list = field(default_factory=list)
+    char_indices: list = field(default_factory=list)
+
+
+CHARACTER_COLORS = ["#4c8bf5", "#37d67a", "#f5a623", "#ff5c5c", "#c678dd", "#56b6c2", "#89ddff"]
+
+
+@dataclass
+class Character:
+    name: str = "角色"
+    age: str = "青年"
+    gender: str = "男"
+    appearance: str = ""
 
 
 @dataclass
 class ProductionSettings:
-    char_count: str = "1"
-    char_age: str = "青年"
-    char_gender: str = "男"
-    char_appearance: str = ""
     era: str = "現代"
     location: str = ""
     bg_desc: str = ""
 
 
-_SB_CARD_W = 140
-_SB_CARD_H = 78
-_SB_COLS = 4
-_SB_SPACE_X = 170
-_SB_SPACE_Y = 105
+_SB_CARD_W = 150
+_SB_CARD_H = 82
+_SB_CHAR_CARD_W = 130
+_SB_CHAR_CARD_H = 66
 
 
 def format_timecode(seconds: float) -> str:
@@ -804,12 +811,20 @@ class LyricsSrtApp(tk.Tk):
         self.image_clips: list[ImageClip] = []
         self._img_bg_cache: tuple[str, object] | None = None
         self.storyboard: list[StoryboardScene] = []
+        self.characters: list[Character] = []
         self.production: ProductionSettings = ProductionSettings()
         self._sb_canvas: tk.Canvas | None = None
         self._zoom: float = 1.0
         self._pan_x: float = 20.0
         self._pan_y: float = 20.0
         self._selected_scene: int | None = None
+        self._selected_char: int | None = None
+        self._scene_pos: list = []
+        self._char_pos: list = []
+        self._dragging_node: str | None = None
+        self._drag_start_canvas: tuple = (0, 0)
+        self._drag_node_orig: tuple = (0.0, 0.0)
+        self._detail_frame: ttk.Frame | None = None
         self.subtitle_font_size_var = tk.IntVar(value=64)
         self.subtitle_text_color = "#f6f7f4"
         self.subtitle_outline_color = "#100c09"
@@ -1385,6 +1400,7 @@ class LyricsSrtApp(tk.Tk):
         tb.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 4))
         ttk.Label(tb, text="分鏡表", font=("Microsoft JhengHei UI", 9, "bold")).pack(side="left")
         ttk.Button(tb, text="＋ 新增", command=self._add_scene, width=7).pack(side="left", padx=(8, 0))
+        ttk.Button(tb, text="＋ 角色", command=self._add_character, width=7).pack(side="left", padx=(4, 0))
         ttk.Button(tb, text="重置視角", command=self._sb_reset_view, width=7).pack(side="left", padx=(4, 0))
         ttk.Button(tb, text="匯出 TXT", command=self._export_storyboard, width=9).pack(side="right")
         self._sb_zoom_label = ttk.Label(tb, text="100%")
@@ -1394,13 +1410,13 @@ class LyricsSrtApp(tk.Tk):
         cv.grid(row=1, column=0, sticky="nsew")
         cv.bind("<ButtonPress-1>", self._sb_press)
         cv.bind("<B1-Motion>", self._sb_b1_drag)
+        cv.bind("<ButtonRelease-1>", self._sb_b1_release)
         cv.bind("<ButtonPress-3>", self._sb_rmb_start)
         cv.bind("<B3-Motion>", self._sb_rmb_drag)
         cv.bind("<MouseWheel>", self._sb_wheel)
         cv.bind("<Button-4>", self._sb_wheel)
         cv.bind("<Button-5>", self._sb_wheel)
         self._sb_canvas = cv
-        self._sb_press_card: int | None = None
         self._sb_press_xy: tuple = (0, 0)
         self._sb_pan_orig: tuple = (self._pan_x, self._pan_y)
 
@@ -1411,19 +1427,37 @@ class LyricsSrtApp(tk.Tk):
 
         detail = ttk.Frame(parent)
         detail.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 0))
-        self._build_detail_bar(detail)
+        self._detail_frame = detail
+        self._update_detail_bar()
 
         self._draw_storyboard_canvas()
+
+    def _default_char_pos(self, i: int) -> tuple:
+        return (20.0 + i * 160.0, 20.0)
+
+    def _default_scene_pos(self, i: int) -> tuple:
+        cols = 4
+        return (20.0 + (i % cols) * 200.0, 160.0 + (i // cols) * 130.0)
+
+    def _get_char_pos(self, i: int) -> tuple:
+        if i < len(self._char_pos) and self._char_pos[i] is not None:
+            return self._char_pos[i]
+        return self._default_char_pos(i)
+
+    def _get_scene_pos(self, i: int) -> tuple:
+        if i < len(self._scene_pos) and self._scene_pos[i] is not None:
+            return self._scene_pos[i]
+        return self._default_scene_pos(i)
 
     def _draw_storyboard_canvas(self) -> None:
         cv = self._sb_canvas
         if cv is None:
             return
         cv.delete("all")
-        if not self.storyboard:
+        if not self.storyboard and not self.characters:
             cv.create_text(
                 max(cv.winfo_width() // 2, 150), 80,
-                text="點「＋ 新增」新增場景\n左鍵拖曳空白處可平移，滾輪縮放",
+                text="點「＋ 新增」新增場景，「＋ 角色」新增角色\n左鍵拖曳卡片可移動，拖曳空白處可平移，滾輪縮放",
                 fill=DARK_MUTED_FG, font=("Microsoft JhengHei UI", 9), justify="center",
             )
             return
@@ -1431,57 +1465,109 @@ class LyricsSrtApp(tk.Tk):
         zoom = self._zoom
         cw = int(_SB_CARD_W * zoom)
         ch = int(_SB_CARD_H * zoom)
-        hdr_h = int(22 * zoom)
+        ccw = int(_SB_CHAR_CARD_W * zoom)
+        cch = int(_SB_CHAR_CARD_H * zoom)
+        lw = max(1, int(2 * zoom))
         ft = ("Microsoft JhengHei UI", max(7, int(9 * zoom)), "bold")
         fb = ("Microsoft JhengHei UI", max(6, int(8 * zoom)))
 
-        def card_pos(i: int) -> tuple:
-            col = i % _SB_COLS
-            row = i // _SB_COLS
-            return col * _SB_SPACE_X * zoom + self._pan_x, row * _SB_SPACE_Y * zoom + self._pan_y
+        def to_canvas(lx: float, ly: float) -> tuple:
+            return lx * zoom + self._pan_x, ly * zoom + self._pan_y
 
-        positions = [card_pos(i) for i in range(len(self.storyboard))]
-
-        lw = max(1, int(2 * zoom))
+        # scene→scene dashed flow arrows
         asz = (max(6, int(10 * zoom)), max(8, int(12 * zoom)), max(3, int(4 * zoom)))
-        for i in range(len(positions) - 1):
-            ax, ay = positions[i]
-            bx, by = positions[i + 1]
-            if (i + 1) % _SB_COLS != 0:
-                x1, y1 = ax + cw, ay + ch // 2
-                x2, y2 = bx, by + ch // 2
-            else:
-                x1, y1 = ax + cw // 2, ay + ch
-                x2, y2 = bx + cw // 2, by
-            cv.create_line(x1, y1, x2, y2, fill=DARK_ACCENT, width=lw, arrow="last", arrowshape=asz)
+        for i in range(len(self.storyboard) - 1):
+            ax, ay = to_canvas(*self._get_scene_pos(i))
+            bx, by = to_canvas(*self._get_scene_pos(i + 1))
+            x1, y1 = ax + cw, ay + ch // 2
+            x2, y2 = bx, by + ch // 2
+            mx = (x1 + x2) / 2
+            cv.create_line(x1, y1, mx, y1, mx, y2, x2, y2,
+                           fill=DARK_ACCENT, width=lw, smooth=True,
+                           dash=(4, 4), arrow="last", arrowshape=asz)
 
+        # char→scene connection lines
+        for si, scene in enumerate(self.storyboard):
+            sx, sy = to_canvas(*self._get_scene_pos(si))
+            sx_mid = sx + cw // 2
+            sy_top = sy
+            for ci in scene.char_indices:
+                if ci < 0 or ci >= len(self.characters):
+                    continue
+                color = CHARACTER_COLORS[ci % len(CHARACTER_COLORS)]
+                cx2, cy2 = to_canvas(*self._get_char_pos(ci))
+                cx_mid = cx2 + ccw // 2
+                cy_bot = cy2 + cch
+                my = (cy_bot + sy_top) / 2
+                cv.create_line(cx_mid, cy_bot, cx_mid, my, sx_mid, my, sx_mid, sy_top,
+                               fill=color, width=lw, smooth=True)
+
+        # character cards
+        band_h = int(20 * zoom)
+        for i, char in enumerate(self.characters):
+            lx, ly = self._get_char_pos(i)
+            cx, cy = to_canvas(lx, ly)
+            sel_c = (i == self._selected_char)
+            color = CHARACTER_COLORS[i % len(CHARACTER_COLORS)]
+            cv.create_rectangle(cx, cy, cx + ccw, cy + cch,
+                                 fill="#2d3748" if not sel_c else "#3a4a60",
+                                 outline=color, width=lw + (2 if sel_c else 0),
+                                 tags=(f"ccard:{i}",))
+            cv.create_rectangle(cx + lw, cy + lw, cx + ccw - lw, cy + band_h,
+                                 fill=color, outline="", tags=(f"ccard:{i}",))
+            cv.create_text(cx + ccw // 2, cy + band_h // 2,
+                           text=f"角色 {i + 1}",
+                           fill="white", font=ft, tags=(f"ccard:{i}",))
+            name_txt = char.name if char.name != "角色" else f"角色{i + 1}"
+            cv.create_text(cx + ccw // 2, cy + band_h + int((cch - band_h) * 0.42),
+                           text=name_txt, fill=DARK_FG, font=fb,
+                           width=int(ccw - 6), tags=(f"ccard:{i}",))
+            cv.create_text(cx + ccw // 2, cy + cch - int(8 * zoom),
+                           text=f"{char.gender} · {char.age}",
+                           fill=DARK_MUTED_FG, font=fb, tags=(f"ccard:{i}",))
+
+        # scene cards
+        hdr_h = int(22 * zoom)
         for i, scene in enumerate(self.storyboard):
-            cx, cy = positions[i]
+            lx, ly = self._get_scene_pos(i)
+            sx, sy = to_canvas(lx, ly)
             sel = (i == self._selected_scene)
-            cv.create_rectangle(cx, cy, cx + cw, cy + ch,
+            cv.create_rectangle(sx, sy, sx + cw, sy + ch,
                                  fill="#2a3e55" if sel else DARK_PANEL,
                                  outline=DARK_ACCENT if sel else DARK_BORDER,
-                                 width=lw, tags=(f"card:{i}",))
-            cv.create_rectangle(cx + lw, cy + lw, cx + cw - lw, cy + hdr_h,
+                                 width=lw + (1 if sel else 0), tags=(f"scard:{i}",))
+            cv.create_rectangle(sx + lw, sy + lw, sx + cw - lw, sy + hdr_h,
                                  fill="#1a4a7a" if sel else "#1e2838",
-                                 outline="", tags=(f"card:{i}",))
-            cv.create_text(cx + cw // 2, cy + hdr_h // 2,
+                                 outline="", tags=(f"scard:{i}",))
+            cv.create_text(sx + cw // 2, sy + hdr_h // 2,
                            text=f"場景 {i + 1}",
                            fill="#a8d4ff" if sel else DARK_FG,
-                           font=ft, tags=(f"card:{i}",))
+                           font=ft, tags=(f"scard:{i}",))
             joined = "、".join(scene.lyric_texts)
-            display = (joined[:18] + "…") if len(joined) > 18 else (joined or "（無歌詞）")
-            cv.create_text(cx + cw // 2, cy + hdr_h + int((ch - hdr_h) * 0.42),
+            display = (joined[:16] + "…") if len(joined) > 16 else (joined or "（無歌詞）")
+            cv.create_text(sx + cw // 2, sy + hdr_h + int((ch - hdr_h) * 0.42),
                            text=display, fill="#7ea8c8", font=fb,
-                           width=int(cw - 8), tags=(f"card:{i}",))
-            cv.create_text(cx + cw // 2, cy + ch - int(10 * zoom),
-                           text=f"{scene.shot_type} · {scene.tone}",
-                           fill=DARK_MUTED_FG, font=fb, tags=(f"card:{i}",))
+                           width=int(cw - 8), tags=(f"scard:{i}",))
+            if scene.char_indices:
+                dot_r = max(4, int(5 * zoom))
+                dot_y = sy + ch - dot_r - int(4 * zoom)
+                n = len(scene.char_indices)
+                dot_sp = dot_r * 2 + max(2, int(3 * zoom))
+                start_x = sx + cw // 2 - (n - 1) * dot_sp // 2
+                for di, ci in enumerate(scene.char_indices):
+                    dcolor = CHARACTER_COLORS[ci % len(CHARACTER_COLORS)]
+                    dx_pos = start_x + di * dot_sp
+                    cv.create_oval(dx_pos - dot_r, dot_y - dot_r,
+                                   dx_pos + dot_r, dot_y + dot_r,
+                                   fill=dcolor, outline="", tags=(f"scard:{i}",))
+            else:
+                cv.create_text(sx + cw // 2, sy + ch - int(10 * zoom),
+                               text=f"{scene.shot_type} · {scene.tone}",
+                               fill=DARK_MUTED_FG, font=fb, tags=(f"scard:{i}",))
 
     def _refresh_storyboard(self) -> None:
         self._draw_storyboard_canvas()
-        if hasattr(self, "_detail_vars"):
-            self._update_detail_bar()
+        self._update_detail_bar()
 
     def _sb_reset_view(self) -> None:
         self._zoom, self._pan_x, self._pan_y = 1.0, 20.0, 20.0
@@ -1493,29 +1579,69 @@ class LyricsSrtApp(tk.Tk):
         self._sb_press_xy = (event.x, event.y)
         self._sb_pan_orig = (self._pan_x, self._pan_y)
         items = self._sb_canvas.find_overlapping(event.x - 2, event.y - 2, event.x + 2, event.y + 2)
-        clicked: int | None = None
+        clicked_type: str | None = None
+        clicked_idx: int | None = None
         for item in reversed(items):
             for tag in self._sb_canvas.gettags(item):
-                if tag.startswith("card:"):
-                    clicked = int(tag.split(":")[1])
+                if tag.startswith("scard:"):
+                    clicked_type = "scene"
+                    clicked_idx = int(tag.split(":")[1])
                     break
-            if clicked is not None:
+                elif tag.startswith("ccard:"):
+                    clicked_type = "char"
+                    clicked_idx = int(tag.split(":")[1])
+                    break
+            if clicked_type is not None:
                 break
-        self._sb_press_card = clicked
-        if clicked is not None:
-            self._selected_scene = clicked
-            self._draw_storyboard_canvas()
-            if hasattr(self, "_detail_vars"):
+        if clicked_type == "scene":
+            changed = (self._selected_scene != clicked_idx or self._selected_char is not None)
+            self._selected_scene = clicked_idx
+            self._selected_char = None
+            self._dragging_node = f"scene:{clicked_idx}"
+            self._drag_start_canvas = (event.x, event.y)
+            self._drag_node_orig = self._get_scene_pos(clicked_idx)
+            if changed:
+                self._draw_storyboard_canvas()
                 self._update_detail_bar()
+        elif clicked_type == "char":
+            changed = (self._selected_char != clicked_idx or self._selected_scene is not None)
+            self._selected_char = clicked_idx
+            self._selected_scene = None
+            self._dragging_node = f"char:{clicked_idx}"
+            self._drag_start_canvas = (event.x, event.y)
+            self._drag_node_orig = self._get_char_pos(clicked_idx)
+            if changed:
+                self._draw_storyboard_canvas()
+                self._update_detail_bar()
+        else:
+            self._dragging_node = None
 
     def _sb_b1_drag(self, event: tk.Event) -> None:
-        if self._sb_press_card is not None:
-            return
-        dx = event.x - self._sb_press_xy[0]
-        dy = event.y - self._sb_press_xy[1]
-        self._pan_x = self._sb_pan_orig[0] + dx
-        self._pan_y = self._sb_pan_orig[1] + dy
-        self._draw_storyboard_canvas()
+        if self._dragging_node is not None:
+            dx = (event.x - self._drag_start_canvas[0]) / self._zoom
+            dy = (event.y - self._drag_start_canvas[1]) / self._zoom
+            nx = self._drag_node_orig[0] + dx
+            ny = self._drag_node_orig[1] + dy
+            if self._dragging_node.startswith("scene:"):
+                idx = int(self._dragging_node.split(":")[1])
+                while len(self._scene_pos) <= idx:
+                    self._scene_pos.append(None)
+                self._scene_pos[idx] = (nx, ny)
+            else:
+                idx = int(self._dragging_node.split(":")[1])
+                while len(self._char_pos) <= idx:
+                    self._char_pos.append(None)
+                self._char_pos[idx] = (nx, ny)
+            self._draw_storyboard_canvas()
+        else:
+            dx = event.x - self._sb_press_xy[0]
+            dy = event.y - self._sb_press_xy[1]
+            self._pan_x = self._sb_pan_orig[0] + dx
+            self._pan_y = self._sb_pan_orig[1] + dy
+            self._draw_storyboard_canvas()
+
+    def _sb_b1_release(self, event: tk.Event) -> None:
+        self._dragging_node = None
 
     def _sb_rmb_start(self, event: tk.Event) -> None:
         self._sb_press_xy = (event.x, event.y)
@@ -1545,28 +1671,8 @@ class LyricsSrtApp(tk.Tk):
         inner.pack(fill="both", expand=True, padx=2, pady=2)
         inner.columnconfigure(0, weight=1)
 
-        char_f = ttk.LabelFrame(inner, text=" 角色設定 ", padding=(6, 4))
-        char_f.pack(fill="x", pady=(0, 4))
-        char_f.columnconfigure(1, weight=1)
-        for r, (lbl, attr, wtype, vals) in enumerate((
-            ("人物數", "char_count",      "combo", ["1", "2", "3", "多人"]),
-            ("年紀",   "char_age",        "combo", ["幼兒", "少年", "青年", "中年", "老年", "不限"]),
-            ("性別",   "char_gender",     "combo", ["男", "女", "男女混", "不限"]),
-            ("外觀",   "char_appearance", "entry", []),
-        )):
-            ttk.Label(char_f, text=lbl).grid(row=r, column=0, sticky="w", pady=2, padx=(0, 4))
-            var = tk.StringVar(value=getattr(self.production, attr))
-            setattr(self, f"_prod_{attr}_var", var)
-            w: ttk.Widget
-            if wtype == "combo":
-                w = ttk.Combobox(char_f, textvariable=var, values=vals, width=8, state="readonly")
-            else:
-                w = ttk.Entry(char_f, textvariable=var, width=10)
-            w.grid(row=r, column=1, sticky="ew", pady=2)
-            var.trace_add("write", lambda *_, a=attr, v=var: setattr(self.production, a, v.get()))
-
         time_f = ttk.LabelFrame(inner, text=" 時空設定 ", padding=(6, 4))
-        time_f.pack(fill="x", pady=4)
+        time_f.pack(fill="x", pady=(0, 4))
         time_f.columnconfigure(1, weight=1)
         for r, (lbl, attr, wtype, vals) in enumerate((
             ("時代", "era",      "combo", ["遠古", "古代", "近代", "現代", "未來", "架空"]),
@@ -1575,6 +1681,7 @@ class LyricsSrtApp(tk.Tk):
             ttk.Label(time_f, text=lbl).grid(row=r, column=0, sticky="w", pady=2, padx=(0, 4))
             var = tk.StringVar(value=getattr(self.production, attr))
             setattr(self, f"_prod_{attr}_var", var)
+            w: ttk.Widget
             if wtype == "combo":
                 w = ttk.Combobox(time_f, textvariable=var, values=vals, width=8, state="readonly")
             else:
@@ -1588,81 +1695,170 @@ class LyricsSrtApp(tk.Tk):
         ttk.Entry(bg_f, textvariable=self._prod_bg_desc_var, width=16).pack(fill="x")
         self._prod_bg_desc_var.trace_add("write", lambda *_: setattr(self.production, "bg_desc", self._prod_bg_desc_var.get()))
 
-    def _build_detail_bar(self, parent: ttk.Frame) -> None:
-        self._detail_label = ttk.Label(parent, text="點選場景卡片可編輯", foreground=DARK_MUTED_FG)
-        self._detail_label.pack(side="left", padx=(0, 12))
-        self._detail_vars: dict[str, tk.StringVar] = {}
-        self._detail_cbs: dict[str, ttk.Combobox] = {}
+    def _update_detail_bar(self) -> None:
+        if self._detail_frame is None:
+            return
+        for w in self._detail_frame.winfo_children():
+            w.destroy()
+        if self._selected_scene is not None and self._selected_scene < len(self.storyboard):
+            self._build_scene_detail(self._detail_frame, self._selected_scene)
+        elif self._selected_char is not None and self._selected_char < len(self.characters):
+            self._build_char_detail(self._detail_frame, self._selected_char)
+        else:
+            ttk.Label(self._detail_frame, text="點選場景或角色卡片可編輯",
+                      foreground=DARK_MUTED_FG).pack(side="left", padx=4)
+
+    def _build_scene_detail(self, parent: ttk.Frame, idx: int) -> None:
+        scene = self.storyboard[idx]
+        ttk.Label(parent, text=f"場景 {idx + 1}",
+                  font=("Microsoft JhengHei UI", 9, "bold")).pack(side="left", padx=(4, 6))
+        ttk.Label(parent, text="移至第").pack(side="left")
+        pos_var = tk.StringVar(value=str(idx + 1))
+        pos_e = ttk.Entry(parent, textvariable=pos_var, width=3)
+        pos_e.pack(side="left", padx=(2, 0))
+        ttk.Label(parent, text="幕").pack(side="left", padx=(2, 8))
+
+        def _do_reorder(e=None):
+            try:
+                new_pos = int(pos_var.get()) - 1
+            except ValueError:
+                return
+            new_pos = max(0, min(len(self.storyboard) - 1, new_pos))
+            cur = self._selected_scene
+            if cur is None or cur == new_pos:
+                return
+            s_item = self.storyboard.pop(cur)
+            self.storyboard.insert(new_pos, s_item)
+            while len(self._scene_pos) < max(cur, new_pos) + 1:
+                self._scene_pos.append(None)
+            s_pos = self._scene_pos.pop(cur)
+            self._scene_pos.insert(new_pos, s_pos)
+            self._selected_scene = new_pos
+            self._draw_storyboard_canvas()
+            self._update_detail_bar()
+
+        pos_e.bind("<Return>", _do_reorder)
+        ttk.Separator(parent, orient="vertical").pack(side="left", fill="y", padx=6)
+
         for lbl, attr, vals in (
             ("鏡位", "shot_type", SHOT_TYPES),
             ("風格", "style",     list(PROMPT_STYLES.keys())),
             ("色調", "tone",      COLOR_TONES),
         ):
             ttk.Label(parent, text=lbl).pack(side="left", padx=(0, 2))
-            var = tk.StringVar()
-            cb = ttk.Combobox(parent, textvariable=var, values=vals, width=7, state="disabled")
-            cb.pack(side="left", padx=(0, 8))
-            self._detail_vars[attr] = var
-            self._detail_cbs[attr] = cb
-            cb.bind("<<ComboboxSelected>>", lambda e, a=attr: self._on_detail_combo(a))
-        ttk.Separator(parent, orient="vertical").pack(side="left", fill="y", padx=8)
-        ttk.Button(parent, text="↑", width=2, command=lambda: self._move_scene_sel(-1)).pack(side="left", padx=1)
-        ttk.Button(parent, text="↓", width=2, command=lambda: self._move_scene_sel(1)).pack(side="left", padx=1)
-        ttk.Button(parent, text="✕", width=2, command=self._delete_selected_scene).pack(side="left", padx=(4, 0))
+            var = tk.StringVar(value=getattr(scene, attr))
+            cb = ttk.Combobox(parent, textvariable=var, values=vals, width=7, state="readonly")
+            cb.pack(side="left", padx=(0, 6))
 
-    def _update_detail_bar(self) -> None:
-        if not hasattr(self, "_detail_vars"):
-            return
-        if self._selected_scene is None or self._selected_scene >= len(self.storyboard):
-            self._detail_label.config(text="點選場景卡片可編輯")
-            for cb in self._detail_cbs.values():
-                cb.config(state="disabled")
-            return
-        scene = self.storyboard[self._selected_scene]
-        self._detail_label.config(text=f"場景 {self._selected_scene + 1}")
-        for attr, cb in self._detail_cbs.items():
-            self._detail_vars[attr].set(getattr(scene, attr))
-            cb.config(state="readonly")
+            def on_combo(e, a=attr, v=var):
+                si = self._selected_scene
+                if si is not None and si < len(self.storyboard):
+                    setattr(self.storyboard[si], a, v.get())
+                    self._draw_storyboard_canvas()
 
-    def _on_detail_combo(self, field: str) -> None:
-        if self._selected_scene is None or self._selected_scene >= len(self.storyboard):
+            cb.bind("<<ComboboxSelected>>", on_combo)
+
+        ttk.Separator(parent, orient="vertical").pack(side="left", fill="y", padx=6)
+        ttk.Label(parent, text="出場：").pack(side="left", padx=(0, 2))
+        for ci, char in enumerate(self.characters):
+            color = CHARACTER_COLORS[ci % len(CHARACTER_COLORS)]
+            active = ci in scene.char_indices
+            name_txt = char.name if char.name != "角色" else f"角色{ci + 1}"
+            btn = tk.Button(
+                parent, text=name_txt,
+                bg=color if active else DARK_PANEL,
+                fg="white" if active else DARK_MUTED_FG,
+                relief="flat", padx=5, pady=1,
+                command=lambda c=ci: self._toggle_char_in_scene(c),
+            )
+            btn.pack(side="left", padx=2)
+        ttk.Separator(parent, orient="vertical").pack(side="left", fill="y", padx=6)
+        ttk.Button(parent, text="✕", width=2, command=self._delete_selected_scene).pack(side="left", padx=(2, 0))
+
+    def _build_char_detail(self, parent: ttk.Frame, idx: int) -> None:
+        char = self.characters[idx]
+        color = CHARACTER_COLORS[idx % len(CHARACTER_COLORS)]
+        ttk.Label(parent, text=f"角色 {idx + 1}",
+                  font=("Microsoft JhengHei UI", 9, "bold"),
+                  foreground=color).pack(side="left", padx=(4, 8))
+        ttk.Label(parent, text="名稱").pack(side="left")
+        name_var = tk.StringVar(value=char.name if char.name != "角色" else f"角色{idx + 1}")
+        ttk.Entry(parent, textvariable=name_var, width=8).pack(side="left", padx=(2, 8))
+        name_var.trace_add("write", lambda *_, v=name_var, i=idx: setattr(self.characters[i], "name", v.get()))
+        ttk.Label(parent, text="性別").pack(side="left")
+        gender_var = tk.StringVar(value=char.gender)
+        ttk.Combobox(parent, textvariable=gender_var, values=["男", "女", "不限"],
+                     width=5, state="readonly").pack(side="left", padx=(2, 8))
+        gender_var.trace_add("write", lambda *_, v=gender_var, i=idx: setattr(self.characters[i], "gender", v.get()))
+        ttk.Label(parent, text="年紀").pack(side="left")
+        age_var = tk.StringVar(value=char.age)
+        ttk.Combobox(parent, textvariable=age_var,
+                     values=["幼兒", "少年", "青年", "中年", "老年", "不限"],
+                     width=6, state="readonly").pack(side="left", padx=(2, 8))
+        age_var.trace_add("write", lambda *_, v=age_var, i=idx: setattr(self.characters[i], "age", v.get()))
+        ttk.Label(parent, text="外觀").pack(side="left")
+        appear_var = tk.StringVar(value=char.appearance)
+        ttk.Entry(parent, textvariable=appear_var, width=14).pack(side="left", padx=(2, 8))
+        appear_var.trace_add("write", lambda *_, v=appear_var, i=idx: setattr(self.characters[i], "appearance", v.get()))
+        ttk.Separator(parent, orient="vertical").pack(side="left", fill="y", padx=6)
+        ttk.Button(parent, text="✕", width=2, command=self._delete_selected_character).pack(side="left", padx=(2, 0))
+
+    def _toggle_char_in_scene(self, char_idx: int) -> None:
+        si = self._selected_scene
+        if si is None or si >= len(self.storyboard):
             return
-        value = self._detail_vars[field].get()
-        if value:
-            setattr(self.storyboard[self._selected_scene], field, value)
-            self._draw_storyboard_canvas()
+        scene = self.storyboard[si]
+        if char_idx in scene.char_indices:
+            scene.char_indices.remove(char_idx)
+        else:
+            scene.char_indices.append(char_idx)
+        self._draw_storyboard_canvas()
+        self._update_detail_bar()
 
     def _delete_selected_scene(self) -> None:
         if self._selected_scene is not None:
             self._delete_scene(self._selected_scene)
             self._selected_scene = None
-            if hasattr(self, "_detail_vars"):
-                self._update_detail_bar()
+            self._update_detail_bar()
 
-    def _move_scene_sel(self, direction: int) -> None:
-        if self._selected_scene is None:
+    def _delete_selected_character(self) -> None:
+        idx = self._selected_char
+        if idx is None:
             return
-        new_idx = self._selected_scene + direction
-        if 0 <= new_idx < len(self.storyboard):
-            self._move_scene(self._selected_scene, direction)
-            self._selected_scene = new_idx
-            if hasattr(self, "_detail_vars"):
-                self._update_detail_bar()
+        del self.characters[idx]
+        if idx < len(self._char_pos):
+            del self._char_pos[idx]
+        for scene in self.storyboard:
+            scene.char_indices = [ci if ci < idx else ci - 1
+                                  for ci in scene.char_indices if ci != idx]
+        self._selected_char = None
+        self._draw_storyboard_canvas()
+        self._update_detail_bar()
 
     def _add_scene(self) -> None:
         default_style = self.img_style_var.get() if self.img_style_var.get() in PROMPT_STYLES else "電影風"
         self.storyboard.append(StoryboardScene(shot_type="中景", style=default_style, tone="暖色"))
         self._draw_storyboard_canvas()
 
+    def _add_character(self) -> None:
+        i = len(self.characters)
+        self.characters.append(Character(name=f"角色{i + 1}"))
+        self._draw_storyboard_canvas()
+
     def _delete_scene(self, idx: int) -> None:
         if 0 <= idx < len(self.storyboard):
             del self.storyboard[idx]
+            if idx < len(self._scene_pos):
+                del self._scene_pos[idx]
             self._draw_storyboard_canvas()
 
     def _move_scene(self, idx: int, direction: int) -> None:
         new_idx = idx + direction
         if 0 <= new_idx < len(self.storyboard):
             self.storyboard[idx], self.storyboard[new_idx] = self.storyboard[new_idx], self.storyboard[idx]
+            while len(self._scene_pos) <= max(idx, new_idx):
+                self._scene_pos.append(None)
+            self._scene_pos[idx], self._scene_pos[new_idx] = self._scene_pos[new_idx], self._scene_pos[idx]
             self._draw_storyboard_canvas()
 
     def _update_scene_field(self, idx: int, field: str, value: str) -> None:
@@ -1695,23 +1891,6 @@ class LyricsSrtApp(tk.Tk):
             self.storyboard[scene_idx].lyric_texts.append(text)
             self._draw_storyboard_canvas()
 
-    def _build_character_desc(self) -> str:
-        p = self.production
-        count_map  = {"1": "1 person", "2": "2 people", "3": "3 people", "多人": "multiple people"}
-        gender_map = {"男": "male", "女": "female", "男女混": "male and female"}
-        age_map    = {"幼兒": "toddler", "少年": "teenager", "青年": "young adult",
-                      "中年": "middle-aged", "老年": "elderly"}
-        parts: list[str] = []
-        if p.char_count and p.char_count != "不限":
-            parts.append(count_map.get(p.char_count, p.char_count))
-        if p.char_gender and p.char_gender != "不限":
-            parts.append(gender_map.get(p.char_gender, p.char_gender))
-        if p.char_age and p.char_age != "不限":
-            parts.append(age_map.get(p.char_age, p.char_age))
-        if p.char_appearance:
-            parts.append(p.char_appearance)
-        return ", ".join(parts)
-
     def _build_setting_desc(self) -> str:
         p = self.production
         era_map = {
@@ -1739,13 +1918,22 @@ class LyricsSrtApp(tk.Tk):
         )
         if not path:
             return
-        char_desc    = self._build_character_desc()
         setting_desc = self._build_setting_desc()
+        age_map    = {"幼兒": "toddler", "少年": "teenager", "青年": "young adult",
+                      "中年": "middle-aged", "老年": "elderly"}
+        gender_map = {"男": "male", "女": "female", "男女混": "male and female", "不限": "any"}
         lines = ["=== 分鏡表 ===", ""]
-        if char_desc:
-            lines += [f"【角色設定】{char_desc}", ""]
         if setting_desc:
             lines += [f"【場景設定】{setting_desc}", ""]
+        if self.characters:
+            lines += ["【角色設定】"]
+            for i, c in enumerate(self.characters):
+                name = c.name if c.name != "角色" else f"角色{i + 1}"
+                entry = f"  角色{i + 1}：{name}，{c.gender}，{c.age}"
+                if c.appearance:
+                    entry += f"，{c.appearance}"
+                lines.append(entry)
+            lines.append("")
         for i, scene in enumerate(self.storyboard, 1):
             lines.append(f"【場景 {i}】")
             lines.append(f"  鏡位：{scene.shot_type}（{SHOT_TYPE_EN.get(scene.shot_type, '')}）")
@@ -1755,12 +1943,21 @@ class LyricsSrtApp(tk.Tk):
                 lines.append("  歌詞：")
                 for lyr in scene.lyric_texts:
                     lines.append(f"    {lyr}")
+            char_parts: list[str] = []
+            for ci in scene.char_indices:
+                if 0 <= ci < len(self.characters):
+                    c = self.characters[ci]
+                    name = c.name if c.name != "角色" else f"character{ci + 1}"
+                    desc = f"{name} ({gender_map.get(c.gender, c.gender)}, {age_map.get(c.age, c.age)})"
+                    if c.appearance:
+                        desc += f", {c.appearance}"
+                    char_parts.append(desc)
             style_desc = PROMPT_STYLES.get(scene.style, "high quality digital art")
             shot_en    = SHOT_TYPE_EN.get(scene.shot_type, scene.shot_type)
             tone_en    = COLOR_TONE_EN.get(scene.tone, scene.tone)
             prompt_parts = [style_desc, shot_en, tone_en]
-            if char_desc:
-                prompt_parts.append(char_desc)
+            if char_parts:
+                prompt_parts.append("; ".join(char_parts))
             if setting_desc:
                 prompt_parts.append(setting_desc)
             if scene.lyric_texts:
@@ -2230,14 +2427,17 @@ class LyricsSrtApp(tk.Tk):
                 for c in self.image_clips
             ],
             "storyboard": [
-                {"shot_type": s.shot_type, "style": s.style, "tone": s.tone, "lyrics": s.lyric_texts}
+                {"shot_type": s.shot_type, "style": s.style, "tone": s.tone,
+                 "lyrics": s.lyric_texts, "chars": s.char_indices}
                 for s in self.storyboard
             ],
+            "characters": [
+                {"name": c.name, "age": c.age, "gender": c.gender, "appearance": c.appearance}
+                for c in self.characters
+            ],
+            "scene_pos": [[p[0], p[1]] if p else None for p in self._scene_pos],
+            "char_pos":  [[p[0], p[1]] if p else None for p in self._char_pos],
             "production": {
-                "char_count": self.production.char_count,
-                "char_age": self.production.char_age,
-                "char_gender": self.production.char_gender,
-                "char_appearance": self.production.char_appearance,
                 "era": self.production.era,
                 "location": self.production.location,
                 "bg_desc": self.production.bg_desc,
@@ -2317,22 +2517,37 @@ class LyricsSrtApp(tk.Tk):
                     style=sd.get("style", "電影風"),
                     tone=sd.get("tone", "暖色"),
                     lyric_texts=list(sd.get("lyrics", [])),
+                    char_indices=list(sd.get("chars", [])),
                 ))
+            self.characters.clear()
+            for cd in data.get("characters", []):
+                self.characters.append(Character(
+                    name=cd.get("name", "角色"),
+                    age=cd.get("age", "青年"),
+                    gender=cd.get("gender", "男"),
+                    appearance=cd.get("appearance", ""),
+                ))
+            self._scene_pos = [
+                (float(p[0]), float(p[1])) if p else None
+                for p in data.get("scene_pos", [])
+            ]
+            self._char_pos = [
+                (float(p[0]), float(p[1])) if p else None
+                for p in data.get("char_pos", [])
+            ]
             if "production" in data:
                 pd = data["production"]
-                self.production.char_count      = pd.get("char_count", "1")
-                self.production.char_age        = pd.get("char_age", "青年")
-                self.production.char_gender     = pd.get("char_gender", "男")
-                self.production.char_appearance = pd.get("char_appearance", "")
-                self.production.era             = pd.get("era", "現代")
-                self.production.location        = pd.get("location", "")
-                self.production.bg_desc         = pd.get("bg_desc", "")
-                for attr in ("char_count", "char_age", "char_gender", "char_appearance", "era", "location"):
+                self.production.era      = pd.get("era", "現代")
+                self.production.location = pd.get("location", "")
+                self.production.bg_desc  = pd.get("bg_desc", "")
+                for attr in ("era", "location"):
                     var = getattr(self, f"_prod_{attr}_var", None)
                     if var is not None:
                         var.set(getattr(self.production, attr))
                 if hasattr(self, "_prod_bg_desc_var"):
                     self._prod_bg_desc_var.set(self.production.bg_desc)
+            self._selected_scene = None
+            self._selected_char = None
             self._refresh_storyboard()
             self.waveform._redraw()
             self.refresh_tree()
