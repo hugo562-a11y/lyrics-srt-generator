@@ -34,6 +34,7 @@ from storyboard_data import (
     MODEL_MODE_NAMES,
     BODY_TYPES, HAIR_STYLES, FACE_FEATURES,
     TOP_STYLES, BOTTOM_STYLES, SHOE_STYLES, ACCESSORY_OPTIONS,
+    ANIMATION_STATES, ANIMATION_ACTIONS,
 )
 from prompt_assembler import assemble_image_prompt, assemble_video_prompt, assemble_negative_prompt
 
@@ -1830,6 +1831,30 @@ class LyricsSrtApp(tk.Tk):
                 command=lambda c=ci: self._toggle_char_in_scene(c),
             )
             btn.pack(side="left", padx=2)
+        # Group assignment
+        if self.scene_groups:
+            ttk.Separator(row0, orient="vertical").pack(side="left", fill="y", padx=4)
+            ttk.Label(row0, text="群組").pack(side="left", padx=(0, 2))
+            _grp_names = ["（無群組）"] + [sg.name or sg.id for sg in self.scene_groups]
+            _grp_id_map: dict[str, str] = {"（無群組）": ""}
+            for _sg in self.scene_groups:
+                _grp_id_map[_sg.name or _sg.id] = _sg.id
+            _cur_grp = "（無群組）"
+            for _sg in self.scene_groups:
+                if _sg.id == scene.scene_group_id:
+                    _cur_grp = _sg.name or _sg.id
+                    break
+            grp_var = tk.StringVar(value=_cur_grp)
+            grp_cb = ttk.Combobox(row0, textvariable=grp_var, values=_grp_names, width=9, state="readonly")
+            grp_cb.pack(side="left", padx=(0, 4))
+
+            def on_grp(e, _map=_grp_id_map):
+                si = self._selected_scene
+                if si is not None and si < len(self.storyboard):
+                    self.storyboard[si].scene_group_id = _map.get(grp_var.get(), "")
+
+            grp_cb.bind("<<ComboboxSelected>>", on_grp)
+
         ttk.Separator(row0, orient="vertical").pack(side="left", fill="y", padx=4)
         ttk.Button(row0, text="✕", width=2, command=self._delete_selected_scene).pack(side="left", padx=(2, 0))
 
@@ -1860,17 +1885,20 @@ class LyricsSrtApp(tk.Tk):
 
         ttk.Label(row1, text="開始", foreground=DARK_MUTED_FG).pack(side="left", padx=(0, 2))
         ss_var = tk.StringVar(value=scene.start_state)
-        ttk.Entry(row1, textvariable=ss_var, width=12).pack(side="left", padx=(0, 4))
+        ttk.Combobox(row1, textvariable=ss_var, values=ANIMATION_STATES,
+                     width=12, state="normal").pack(side="left", padx=(0, 4))
         ss_var.trace_add("write", lambda *_, v=ss_var, i=idx: self._set_scene_field(i, "start_state", v.get()))
 
         ttk.Label(row1, text="動作", foreground=DARK_MUTED_FG).pack(side="left", padx=(0, 2))
         ma_var = tk.StringVar(value=scene.main_action)
-        ttk.Entry(row1, textvariable=ma_var, width=14).pack(side="left", padx=(0, 4))
+        ttk.Combobox(row1, textvariable=ma_var, values=ANIMATION_ACTIONS,
+                     width=13, state="normal").pack(side="left", padx=(0, 4))
         ma_var.trace_add("write", lambda *_, v=ma_var, i=idx: self._set_scene_field(i, "main_action", v.get()))
 
         ttk.Label(row1, text="結束", foreground=DARK_MUTED_FG).pack(side="left", padx=(0, 2))
         es_var = tk.StringVar(value=scene.end_state)
-        ttk.Entry(row1, textvariable=es_var, width=12).pack(side="left", padx=(0, 4))
+        ttk.Combobox(row1, textvariable=es_var, values=ANIMATION_STATES,
+                     width=12, state="normal").pack(side="left", padx=(0, 4))
         es_var.trace_add("write", lambda *_, v=es_var, i=idx: self._set_scene_field(i, "end_state", v.get()))
 
         ttk.Separator(row1, orient="vertical").pack(side="left", fill="y", padx=4)
