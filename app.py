@@ -2017,6 +2017,7 @@ class LyricsSrtApp(tk.Tk):
         color = CHARACTER_COLORS[idx % len(CHARACTER_COLORS)]
 
         dlg = tk.Toplevel(self)
+        dlg.configure(bg=DARK_BG)
         dlg.title(f"角色 {idx + 1} — 外觀設定")
         dlg.geometry("620x500")
         dlg.resizable(True, True)
@@ -2181,36 +2182,44 @@ class LyricsSrtApp(tk.Tk):
 
     def _open_scene_groups_dialog(self) -> None:
         dlg = tk.Toplevel(self)
+        dlg.configure(bg=DARK_BG)
         dlg.title("場景群組管理")
-        dlg.geometry("680x400")
+        dlg.geometry("700x430")
         dlg.resizable(True, True)
         dlg.grab_set()
 
-        left = ttk.Frame(dlg, width=180)
+        # ── Left: group list ──────────────────────────────────────────────────
+        left = tk.Frame(dlg, bg=DARK_PANEL, width=190)
         left.pack(side="left", fill="y", padx=(8, 0), pady=8)
         left.pack_propagate(False)
 
-        ttk.Label(left, text="群組列表").pack(anchor="w")
-        listbox = tk.Listbox(left, selectmode="single", activestyle="none")
-        listbox.pack(fill="both", expand=True)
-        btns = ttk.Frame(left)
-        btns.pack(fill="x", pady=(4, 0))
-        ttk.Button(btns, text="＋ 新增", width=7,
-                   command=lambda: _new_group()).pack(side="left")
-        ttk.Button(btns, text="✕ 刪除", width=7,
-                   command=lambda: _del_group()).pack(side="left", padx=(4, 0))
+        tk.Label(left, text="群組列表", bg=DARK_PANEL, fg=DARK_FG,
+                 font=("Microsoft JhengHei UI", 9, "bold")).pack(anchor="w", padx=6, pady=(6, 2))
 
+        listbox = tk.Listbox(
+            left, selectmode="single", activestyle="none",
+            bg=DARK_FIELD, fg=DARK_FG,
+            selectbackground=DARK_ACCENT, selectforeground="#ffffff",
+            borderwidth=0, highlightthickness=0,
+        )
+        listbox.pack(fill="both", expand=True, padx=6, pady=(0, 4))
+
+        btn_row = tk.Frame(left, bg=DARK_PANEL)
+        btn_row.pack(fill="x", padx=6, pady=(0, 6))
+        ttk.Button(btn_row, text="＋ 新增", width=7, command=lambda: _new_group()).pack(side="left")
+        ttk.Button(btn_row, text="✕ 刪除", width=7, command=lambda: _del_group()).pack(side="left", padx=(4, 0))
+
+        tk.Frame(dlg, bg=DARK_BORDER, width=1).pack(side="left", fill="y", pady=8)
+
+        # ── Right: form ───────────────────────────────────────────────────────
         right = ttk.Frame(dlg)
-        right.pack(side="left", fill="both", expand=True, padx=8, pady=8)
+        right.pack(side="left", fill="both", expand=True, padx=12, pady=8)
 
         _fields: dict = {}
+        _name_entry: list = []          # mutable ref so closures can set it
+        _suppress: list = [False]       # suppress <<ListboxSelect>> during list edits
 
-        def _refresh_list():
-            listbox.delete(0, "end")
-            for sg in self.scene_groups:
-                listbox.insert("end", sg.name or sg.id or "（未命名）")
-
-        def _load_group(idx: int):
+        def _load_group(idx: int) -> None:
             if idx < 0 or idx >= len(self.scene_groups):
                 return
             sg = self.scene_groups[idx]
@@ -2221,85 +2230,123 @@ class LyricsSrtApp(tk.Tk):
             _fields["bg_var"].set(sg.bg_elements)
             _fields["ep_var"].set(sg.environment_prompt)
 
-        def _save_group(idx: int):
-            if idx < 0 or idx >= len(self.scene_groups):
+        def _update_label(idx: int, name: str) -> None:
+            """Replace one listbox label without rebuilding or refiring select."""
+            _suppress[0] = True
+            try:
+                listbox.delete(idx)
+                listbox.insert(idx, name or "（未命名）")
+                listbox.selection_clear(0, "end")
+                listbox.selection_set(idx)
+            finally:
+                _suppress[0] = False
+
+        def _save_current() -> None:
+            sel = listbox.curselection()
+            if not sel:
                 return
+            idx = sel[0]
             sg = self.scene_groups[idx]
-            sg.name = _fields["name_var"].get()
-            sg.location = _fields["loc_var"].get()
-            sg.scene_time = _fields["time_var"].get()
-            sg.weather = _fields["weather_var"].get()
+            sg.name        = _fields["name_var"].get().strip()
+            sg.location    = _fields["loc_var"].get()
+            sg.scene_time  = _fields["time_var"].get()
+            sg.weather     = _fields["weather_var"].get()
             sg.bg_elements = _fields["bg_var"].get()
             sg.environment_prompt = _fields["ep_var"].get()
-            _refresh_list()
-            listbox.selection_set(idx)
+            _update_label(idx, sg.name)
 
-        def _on_select(e=None):
+        def _on_select(e=None) -> None:
+            if _suppress[0]:
+                return
             sel = listbox.curselection()
             if sel:
                 _load_group(sel[0])
 
         listbox.bind("<<ListboxSelect>>", _on_select)
 
-        def _new_group():
+        def _new_group() -> None:
             import uuid
             sg = SceneGroup(id=str(uuid.uuid4())[:8], name=f"群組{len(self.scene_groups) + 1}")
             self.scene_groups.append(sg)
-            _refresh_list()
-            listbox.selection_set(len(self.scene_groups) - 1)
+            _suppress[0] = True
+            try:
+                listbox.insert("end", sg.name)
+                listbox.selection_clear(0, "end")
+                listbox.selection_set("end")
+            finally:
+                _suppress[0] = False
             _load_group(len(self.scene_groups) - 1)
+            if _name_entry:
+                _name_entry[0].focus_set()
+                _name_entry[0].selection_range(0, "end")
 
-        def _del_group():
+        def _del_group() -> None:
             sel = listbox.curselection()
             if not sel:
                 return
             idx = sel[0]
             del self.scene_groups[idx]
-            _refresh_list()
+            _suppress[0] = True
+            try:
+                listbox.delete(idx)
+            finally:
+                _suppress[0] = False
             if self.scene_groups:
-                new_sel = max(0, idx - 1)
-                listbox.selection_set(new_sel)
-                _load_group(new_sel)
+                new_idx = min(idx, len(self.scene_groups) - 1)
+                listbox.selection_set(new_idx)
+                _load_group(new_idx)
+            else:
+                for key in ("name_var", "loc_var", "bg_var"):
+                    _fields[key].set("")
+                _fields["time_var"].set("不指定")
+                _fields["weather_var"].set("不指定")
+                _fields["ep_var"].set("")
 
-        # Build right-side form
+        # ── Form fields ───────────────────────────────────────────────────────
         for row_i, (label, key, width, vals) in enumerate([
-            ("名稱", "name_var", 20, None),
-            ("地點", "loc_var",  20, None),
-            ("時段", "time_var", 12, TIMES_OF_DAY),
-            ("天氣", "weather_var", 12, WEATHER_OPTIONS),
-            ("背景元素", "bg_var", 30, None),
+            ("名稱",    "name_var",    24, None),
+            ("地點",    "loc_var",     24, None),
+            ("時段",    "time_var",    14, TIMES_OF_DAY),
+            ("天氣",    "weather_var", 14, WEATHER_OPTIONS),
+            ("背景元素", "bg_var",     34, None),
         ]):
-            ttk.Label(right, text=label, width=6, anchor="e").grid(row=row_i, column=0, sticky="e", pady=3)
+            ttk.Label(right, text=label, width=6, anchor="e").grid(row=row_i, column=0, sticky="e", pady=4)
             var = tk.StringVar()
             _fields[key] = var
             if vals:
                 ttk.Combobox(right, textvariable=var, values=vals, width=width,
-                             state="readonly").grid(row=row_i, column=1, sticky="w", padx=6)
+                             state="readonly").grid(row=row_i, column=1, sticky="w", padx=(8, 0))
             else:
-                ttk.Entry(right, textvariable=var, width=width).grid(row=row_i, column=1, sticky="w", padx=6)
+                ent = ttk.Entry(right, textvariable=var, width=width)
+                ent.grid(row=row_i, column=1, sticky="w", padx=(8, 0))
+                if key == "name_var":
+                    _name_entry.append(ent)
 
-        ttk.Label(right, text="環境提示詞", width=8, anchor="e").grid(row=5, column=0, sticky="ne", pady=3)
-        ep_var = tk.StringVar()
-        _fields["ep_var"] = ep_var
-        ep_txt = tk.Text(right, width=45, height=5)
-        ep_txt.grid(row=5, column=1, sticky="w", padx=6, pady=3)
+        ttk.Label(right, text="環境提示詞", width=6, anchor="ne").grid(row=5, column=0, sticky="ne", pady=4)
+        ep_txt = tk.Text(right, width=44, height=6,
+                         bg=DARK_FIELD, fg=DARK_FG, insertbackground=DARK_FG,
+                         relief="flat", borderwidth=1,
+                         highlightthickness=1, highlightcolor=DARK_BORDER,
+                         highlightbackground=DARK_BORDER,
+                         font=("Microsoft JhengHei UI", 9))
+        ep_txt.grid(row=5, column=1, sticky="nsew", padx=(8, 0), pady=4)
+        right.rowconfigure(5, weight=1)
 
-        # Override ep_var get/set to proxy through Text widget
         class _TextVar:
             def get(self_):
-                return ep_txt.get("1.0", "end").strip()
+                return ep_txt.get("1.0", "end-1c").strip()
             def set(self_, v):
                 ep_txt.delete("1.0", "end")
-                ep_txt.insert("1.0", v)
+                if v:
+                    ep_txt.insert("1.0", v)
         _fields["ep_var"] = _TextVar()
 
-        def _apply():
-            sel = listbox.curselection()
-            if sel:
-                _save_group(sel[0])
-        ttk.Button(right, text="套用", command=_apply).grid(row=6, column=1, sticky="w", padx=6, pady=6)
+        ttk.Button(right, text="套用儲存", command=_save_current).grid(
+            row=6, column=1, sticky="w", padx=(8, 0), pady=(6, 0))
 
-        _refresh_list()
+        # ── Initial populate ──────────────────────────────────────────────────
+        for sg in self.scene_groups:
+            listbox.insert("end", sg.name or sg.id or "（未命名）")
         if self.scene_groups:
             listbox.selection_set(0)
             _load_group(0)
