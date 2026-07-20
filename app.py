@@ -32,9 +32,8 @@ from storyboard_data import (
     NEGATIVE_OPTIONS, ACTIONS_GENERAL, EXPRESSIONS, GAZE_OPTIONS,
     SCENE_LOCATIONS, TIMES_OF_DAY, WEATHER_OPTIONS,
     MODEL_MODE_NAMES,
-    BODY_TYPES, HAIR_STYLES, FACE_FEATURES,
-    TOP_STYLES, BOTTOM_STYLES, SHOE_STYLES, ACCESSORY_OPTIONS,
     ANIMATION_STATES, ANIMATION_ACTIONS,
+    get_char_field_options,
 )
 from prompt_assembler import assemble_image_prompt, assemble_video_prompt, assemble_negative_prompt
 
@@ -1980,68 +1979,168 @@ class LyricsSrtApp(tk.Tk):
         char = self.characters[idx]
         color = CHARACTER_COLORS[idx % len(CHARACTER_COLORS)]
 
-        # ── Row 0: identity ───────────────────────────────────────────────────
-        row0 = ttk.Frame(parent)
-        row0.pack(fill="x")
-
-        ttk.Label(row0, text=f"角色 {idx + 1}",
+        ttk.Label(parent, text=f"角色 {idx + 1}",
                   font=("Microsoft JhengHei UI", 9, "bold"),
                   foreground=color).pack(side="left", padx=(4, 6))
-        ttk.Label(row0, text="名稱").pack(side="left")
-        name_var = tk.StringVar(value=char.name if char.name != "角色" else f"角色{idx + 1}")
-        ttk.Entry(row0, textvariable=name_var, width=8).pack(side="left", padx=(2, 6))
-        name_var.trace_add("write", lambda *_, v=name_var, i=idx: setattr(self.characters[i], "name", v.get()))
 
-        ttk.Label(row0, text="性別").pack(side="left")
+        ttk.Label(parent, text="名稱").pack(side="left")
+        name_var = tk.StringVar(value=char.name if char.name != "角色" else f"角色{idx + 1}")
+        ttk.Entry(parent, textvariable=name_var, width=10).pack(side="left", padx=(2, 6))
+        name_var.trace_add("write", lambda *_, v=name_var, i=idx: (
+            setattr(self.characters[i], "name", v.get()),
+            self._draw_storyboard_canvas(),
+        ))
+
+        ttk.Label(parent, text="性別").pack(side="left")
         gender_var = tk.StringVar(value=char.gender)
-        ttk.Combobox(row0, textvariable=gender_var, values=["男", "女", "不限"],
+        ttk.Combobox(parent, textvariable=gender_var, values=["男", "女", "不限"],
                      width=5, state="readonly").pack(side="left", padx=(2, 6))
         gender_var.trace_add("write", lambda *_, v=gender_var, i=idx: setattr(self.characters[i], "gender", v.get()))
 
-        ttk.Label(row0, text="年紀").pack(side="left")
+        ttk.Label(parent, text="年紀").pack(side="left")
         age_var = tk.StringVar(value=char.age)
-        ttk.Combobox(row0, textvariable=age_var,
+        ttk.Combobox(parent, textvariable=age_var,
                      values=["幼兒", "少年", "青年", "中年", "老年", "不限"],
-                     width=6, state="readonly").pack(side="left", padx=(2, 6))
+                     width=6, state="readonly").pack(side="left", padx=(2, 8))
         age_var.trace_add("write", lambda *_, v=age_var, i=idx: setattr(self.characters[i], "age", v.get()))
 
-        ttk.Separator(row0, orient="vertical").pack(side="left", fill="y", padx=4)
-        ttk.Button(row0, text="✕", width=2, command=self._delete_selected_character).pack(side="left", padx=(2, 0))
+        ttk.Button(parent, text="外觀設定",
+                   command=lambda i=idx: self._open_char_detail_dialog(i)).pack(side="left", padx=(0, 6))
 
-        # ── Row 1: Character Bible ─────────────────────────────────────────────
-        row1 = ttk.Frame(parent)
-        row1.pack(fill="x", pady=(2, 0))
+        ttk.Separator(parent, orient="vertical").pack(side="left", fill="y", padx=4)
+        ttk.Button(parent, text="✕", width=2, command=self._delete_selected_character).pack(side="left", padx=(2, 0))
 
-        for lbl, attr, w, opts in (
-            ("體型",    "body_type",       9,  BODY_TYPES),
-            ("髮型",    "hair",           13,  HAIR_STYLES),
-            ("臉部",    "face",            9,  FACE_FEATURES),
-            ("上衣",    "clothing_top",   11,  TOP_STYLES),
-            ("下身",    "clothing_bottom", 9,  BOTTOM_STYLES),
-            ("鞋子",    "clothing_shoes",  9,  SHOE_STYLES),
-            ("配件",    "accessories",     9,  ACCESSORY_OPTIONS),
-            ("自訂外觀", "appearance",    12,  None),
-        ):
-            ttk.Label(row1, text=lbl, foreground=DARK_MUTED_FG).pack(
-                side="left", padx=(4 if lbl == "體型" else 0, 2))
-            val = getattr(char, attr, "")
-            var = tk.StringVar(value=val)
-            if opts is not None:
-                ttk.Combobox(row1, textvariable=var, values=opts, width=w,
-                             state="readonly").pack(side="left", padx=(0, 4))
-            else:
-                ttk.Entry(row1, textvariable=var, width=w).pack(side="left", padx=(0, 4))
-            var.trace_add("write", lambda *_, v=var, i=idx, a=attr: setattr(self.characters[i], a, v.get()))
+    def _open_char_detail_dialog(self, idx: int) -> None:
+        if idx < 0 or idx >= len(self.characters):
+            return
+        char = self.characters[idx]
+        color = CHARACTER_COLORS[idx % len(CHARACTER_COLORS)]
 
-        ttk.Separator(row1, orient="vertical").pack(side="left", fill="y", padx=4)
-        lock_var = tk.BooleanVar(value=getattr(char, "consistency_lock", True))
-        ttk.Checkbutton(row1, text="一致鎖定", variable=lock_var).pack(side="left", padx=(0, 4))
-        lock_var.trace_add("write", lambda *_, v=lock_var, i=idx: setattr(self.characters[i], "consistency_lock", v.get()))
+        dlg = tk.Toplevel(self)
+        dlg.title(f"角色 {idx + 1} — 外觀設定")
+        dlg.geometry("620x500")
+        dlg.resizable(True, True)
+        dlg.grab_set()
 
-        ttk.Label(row1, text="一致性語", foreground=DARK_MUTED_FG).pack(side="left", padx=(0, 2))
-        ct_var = tk.StringVar(value=getattr(char, "consistency_terms", "same character design, consistent facial features"))
-        ttk.Entry(row1, textvariable=ct_var, width=30).pack(side="left", padx=(0, 4))
-        ct_var.trace_add("write", lambda *_, v=ct_var, i=idx: setattr(self.characters[i], "consistency_terms", v.get()))
+        _cb_refs: dict[str, ttk.Combobox] = {}
+        _var_refs: dict[str, tk.StringVar] = {}
+
+        def _get_opts(field: str) -> list:
+            return get_char_field_options(field, char.gender, char.age)
+
+        def _refresh_opts() -> None:
+            for field, cb in _cb_refs.items():
+                opts = _get_opts(field)
+                cb["values"] = opts
+                cur = _var_refs[field].get()
+                if cur not in opts:
+                    _var_refs[field].set(opts[0] if opts else "（無）")
+
+        # ── Identity ──────────────────────────────────────────────────────────
+        id_frame = ttk.Frame(dlg)
+        id_frame.pack(fill="x", padx=14, pady=(12, 6))
+
+        ttk.Label(id_frame, text=f"角色 {idx + 1}",
+                  font=("Microsoft JhengHei UI", 11, "bold"),
+                  foreground=color).pack(side="left", padx=(0, 12))
+
+        ttk.Label(id_frame, text="名稱").pack(side="left")
+        name_var = tk.StringVar(value=char.name if char.name != "角色" else f"角色{idx + 1}")
+        ttk.Entry(id_frame, textvariable=name_var, width=12).pack(side="left", padx=(4, 12))
+        name_var.trace_add("write", lambda *_: (
+            setattr(char, "name", name_var.get()),
+            self._draw_storyboard_canvas(),
+        ))
+
+        ttk.Label(id_frame, text="性別").pack(side="left")
+        gender_var = tk.StringVar(value=char.gender)
+        gender_cb = ttk.Combobox(id_frame, textvariable=gender_var,
+                                  values=["男", "女", "不限"], width=5, state="readonly")
+        gender_cb.pack(side="left", padx=(4, 12))
+
+        ttk.Label(id_frame, text="年紀").pack(side="left")
+        age_var = tk.StringVar(value=char.age)
+        age_cb = ttk.Combobox(id_frame, textvariable=age_var,
+                               values=["幼兒", "少年", "青年", "中年", "老年", "不限"],
+                               width=7, state="readonly")
+        age_cb.pack(side="left", padx=(4, 0))
+
+        def on_gender(e):
+            setattr(char, "gender", gender_var.get())
+            _refresh_opts()
+
+        def on_age(e):
+            setattr(char, "age", age_var.get())
+            _refresh_opts()
+
+        gender_cb.bind("<<ComboboxSelected>>", on_gender)
+        age_cb.bind("<<ComboboxSelected>>", on_age)
+
+        ttk.Separator(dlg, orient="horizontal").pack(fill="x", padx=14, pady=(0, 4))
+
+        # ── Basic features ────────────────────────────────────────────────────
+        feat_lf = ttk.LabelFrame(dlg, text="基本特徵")
+        feat_lf.pack(fill="x", padx=14, pady=(0, 6))
+
+        feat_fields = [("體型", "body_type"), ("髮型", "hair"), ("臉部", "face")]
+        for col, (lbl, field) in enumerate(feat_fields):
+            ttk.Label(feat_lf, text=lbl).grid(row=0, column=col * 2, sticky="e", padx=(12, 4), pady=8)
+            opts = _get_opts(field)
+            cur = getattr(char, field, "") or "（無）"
+            var = tk.StringVar(value=cur if cur in opts else "（無）")
+            cb = ttk.Combobox(feat_lf, textvariable=var, values=opts, width=16, state="readonly")
+            cb.grid(row=0, column=col * 2 + 1, sticky="w", padx=(0, 8), pady=8)
+            _cb_refs[field] = cb
+            _var_refs[field] = var
+            var.trace_add("write", lambda *_, v=var, f=field: setattr(
+                char, f, "" if v.get() == "（無）" else v.get()))
+
+        # ── Clothing ──────────────────────────────────────────────────────────
+        cloth_lf = ttk.LabelFrame(dlg, text="服裝")
+        cloth_lf.pack(fill="x", padx=14, pady=(0, 6))
+
+        cloth_fields = [
+            ("上衣", "clothing_top"), ("下身", "clothing_bottom"),
+            ("鞋子", "clothing_shoes"), ("配件", "accessories"),
+        ]
+        for col, (lbl, field) in enumerate(cloth_fields):
+            r, c = divmod(col, 2)
+            ttk.Label(cloth_lf, text=lbl).grid(row=r, column=c * 2, sticky="e", padx=(12, 4), pady=8)
+            opts = _get_opts(field)
+            cur = getattr(char, field, "") or "（無）"
+            var = tk.StringVar(value=cur if cur in opts else "（無）")
+            cb = ttk.Combobox(cloth_lf, textvariable=var, values=opts, width=18, state="readonly")
+            cb.grid(row=r, column=c * 2 + 1, sticky="w", padx=(0, 8), pady=8)
+            _cb_refs[field] = cb
+            _var_refs[field] = var
+            var.trace_add("write", lambda *_, v=var, f=field: setattr(
+                char, f, "" if v.get() == "（無）" else v.get()))
+
+        # ── Custom description ────────────────────────────────────────────────
+        desc_lf = ttk.LabelFrame(dlg, text="自訂外觀描述（補充/覆蓋上方選項）")
+        desc_lf.pack(fill="x", padx=14, pady=(0, 6))
+
+        appear_var = tk.StringVar(value=char.appearance)
+        ttk.Entry(desc_lf, textvariable=appear_var).pack(fill="x", padx=10, pady=8)
+        appear_var.trace_add("write", lambda *_: setattr(char, "appearance", appear_var.get()))
+
+        # ── Consistency ───────────────────────────────────────────────────────
+        cons_lf = ttk.LabelFrame(dlg, text="一致性設定")
+        cons_lf.pack(fill="x", padx=14, pady=(0, 6))
+
+        cons_row = ttk.Frame(cons_lf)
+        cons_row.pack(fill="x", padx=8, pady=8)
+
+        lock_var = tk.BooleanVar(value=char.consistency_lock)
+        ttk.Checkbutton(cons_row, text="鎖定外型（每幕保持一致）", variable=lock_var).pack(side="left")
+        lock_var.trace_add("write", lambda *_: setattr(char, "consistency_lock", lock_var.get()))
+
+        ttk.Label(cons_row, text="一致性語：").pack(side="left", padx=(14, 0))
+        ct_var = tk.StringVar(value=char.consistency_terms)
+        ttk.Entry(cons_row, textvariable=ct_var, width=32).pack(side="left", padx=(4, 0))
+        ct_var.trace_add("write", lambda *_: setattr(char, "consistency_terms", ct_var.get()))
+
+        ttk.Button(dlg, text="關閉", command=dlg.destroy).pack(pady=(4, 10))
 
     def _toggle_char_in_scene(self, char_idx: int) -> None:
         si = self._selected_scene
