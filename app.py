@@ -1247,22 +1247,6 @@ class LyricsSrtApp(tk.Tk):
         self.font_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_preview())
         ttk.Button(style_frame, text="瀏覽...", command=self._browse_font, width=6).grid(row=r, column=4, columnspan=2, sticky="w", padx=(12, 0), pady=(4, 0))
 
-        # — AI 影像生成區 —
-        img_frame = ttk.LabelFrame(right, text=" AI 影像生成 ", padding=(10, 8))
-        img_frame.grid(row=2, column=0, sticky="ew", pady=(4, 0))
-        img_frame.columnconfigure(4, weight=1)
-
-        r2 = 0
-        ttk.Label(img_frame, text="風格").grid(row=r2, column=0, sticky="w", padx=(0, 4))
-        img_style_combo = ttk.Combobox(img_frame, textvariable=self.img_style_var, state="readonly", width=10, values=tuple(PROMPT_STYLES))
-        img_style_combo.grid(row=r2, column=1, sticky="w", pady=(0, 4))
-
-        r2 = 1
-        self.img_scene_btn = ttk.Button(img_frame, text="生成場景影像提示詞", command=self._start_scene_prompt_gen)
-        self.img_scene_btn.grid(row=r2, column=0, columnspan=2, sticky="ew", pady=(4, 0))
-        self.img_export_btn = ttk.Button(img_frame, text="匯出歌詞影片（需先生成影像）", command=self._export_lyric_video)
-        self.img_export_btn.grid(row=r2, column=2, columnspan=2, sticky="ew", pady=(4, 0), padx=(4, 0))
-
         # ── 底部列：播放控制 + 匯出 ──────────────────────────────────
         bottom = ttk.Frame(self, padding=(14, 6, 14, 12))
         bottom.grid(row=4, column=0, columnspan=2, sticky="ew")
