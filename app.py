@@ -2218,10 +2218,12 @@ class LyricsSrtApp(tk.Tk):
         _fields: dict = {}
         _name_entry: list = []          # mutable ref so closures can set it
         _suppress: list = [False]       # suppress <<ListboxSelect>> during list edits
+        _cur_idx: list = [-1]           # last loaded group index — reliable for _save_current
 
         def _load_group(idx: int) -> None:
             if idx < 0 or idx >= len(self.scene_groups):
                 return
+            _cur_idx[0] = idx
             sg = self.scene_groups[idx]
             _fields["name_var"].set(sg.name)
             _fields["loc_var"].set(sg.location)
@@ -2243,9 +2245,9 @@ class LyricsSrtApp(tk.Tk):
 
         def _save_current() -> None:
             sel = listbox.curselection()
-            if not sel:
+            idx = sel[0] if sel else _cur_idx[0]
+            if idx < 0 or idx >= len(self.scene_groups):
                 return
-            idx = sel[0]
             sg = self.scene_groups[idx]
             sg.name        = _fields["name_var"].get().strip()
             sg.location    = _fields["loc_var"].get()
