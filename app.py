@@ -1061,12 +1061,11 @@ class LyricsSrtApp(tk.Tk):
         self.option_add("*TCombobox*Listbox.selectBackground", DARK_ACCENT)
         self.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
         self.columnconfigure(0, weight=1)
-        self.columnconfigure(1, weight=0)
-        self.rowconfigure(2, weight=1)
+        self.rowconfigure(1, weight=1)   # outer_h_pw expands
 
         # ── 頂部列：檔案操作 ──────────────────────────────────────────
         top = ttk.Frame(self, padding=(14, 10, 14, 6))
-        top.grid(row=0, column=0, columnspan=2, sticky="ew")
+        top.grid(row=0, column=0, sticky="ew")
         top.columnconfigure(1, weight=1)
         ttk.Button(top, text="匯入音檔", command=self.import_audio).grid(row=0, column=0, padx=(0, 10))
         self.file_var = tk.StringVar(value="尚未選擇音檔")
@@ -1079,9 +1078,17 @@ class LyricsSrtApp(tk.Tk):
         self.lyrics_file_var = tk.StringVar(value="未使用參考歌詞")
         ttk.Label(top, textvariable=self.lyrics_file_var, foreground=MUSIC_COLOR).grid(row=0, column=6, sticky="w")
 
+        # ── 可拖動主框架：左內容 | 右側欄 ──────────────────────────────
+        _sash = dict(sashwidth=6, sashpad=0, sashrelief="flat")
+        outer_h_pw = tk.PanedWindow(self, orient="horizontal", bg=DARK_BORDER, **_sash)
+        outer_h_pw.grid(row=1, column=0, sticky="nsew")
+
+        left_content = ttk.Frame(outer_h_pw)
+        outer_h_pw.add(left_content, minsize=420, stretch="always")
+
         # ── AI 分析區 ───────────────────────────────────────────────
-        ai_frame = ttk.LabelFrame(self, text=" 本機 AI 分析 ", padding=(10, 8))
-        ai_frame.grid(row=1, column=0, sticky="ew", padx=14, pady=(6, 4))
+        ai_frame = ttk.LabelFrame(left_content, text=" 本機 AI 分析 ", padding=(10, 8))
+        ai_frame.pack(fill="x", padx=14, pady=(6, 4))
         ai_frame.columnconfigure(9, weight=1)
         ttk.Label(ai_frame, text="模型").grid(row=0, column=0, padx=(0, 4))
         self.model_var = tk.StringVar(value="large-v3")
@@ -1121,14 +1128,12 @@ class LyricsSrtApp(tk.Tk):
         self.progress_bar = ttk.Progressbar(status_row, mode="indeterminate", length=180)
         self.progress_bar.grid(row=0, column=1, sticky="e", padx=(8, 0))
 
-        # ── 中央：聲波 + 歌詞列表 ───────────────────────────────────
-        center = ttk.Frame(self)
-        center.grid(row=2, column=0, sticky="nsew", padx=14, pady=(0, 4))
-        center.columnconfigure(0, weight=1)
-        center.rowconfigure(1, weight=1)
+        # ── 中央：聲波（上）╱ 歌詞+分鏡（下）垂直可拖動 ─────────────
+        vert_pw = tk.PanedWindow(left_content, orient="vertical", bg=DARK_BORDER, **_sash)
+        vert_pw.pack(fill="both", expand=True, padx=14, pady=(0, 4))
 
-        wave_frame = ttk.LabelFrame(center, text=" 聲波與時間軸 ", padding=(8, 4))
-        wave_frame.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        wave_frame = ttk.LabelFrame(vert_pw, text=" 聲波與時間軸 ", padding=(8, 4))
+        vert_pw.add(wave_frame, minsize=90, stretch="never")
         self.waveform = WaveformView(wave_frame, on_seek=self._waveform_seek, on_select=self._activate_segment, on_edit=self._waveform_edit, on_image_clip_change=self._on_image_clip_change)
         self.waveform.image_clips = self.image_clips
         self.waveform.pack(fill="both", expand=True)
@@ -1139,14 +1144,15 @@ class LyricsSrtApp(tk.Tk):
         ttk.Button(img_track_bar, text="＋ 匯入影像", command=self._import_image_clip, width=10).pack(side="left", padx=(4, 0))
         ttk.Label(img_track_bar, text="（雙擊影像片段可刪除）", foreground=DARK_MUTED_FG).pack(side="left", padx=(6, 0))
 
-        body = ttk.LabelFrame(center, text=" 歌詞時間軸 ╱ 分鏡表 ", padding=(8, 4))
-        body.grid(row=1, column=0, sticky="nsew")
-        body.columnconfigure(0, weight=2)
-        body.columnconfigure(2, weight=3)
-        body.rowconfigure(0, weight=1)
+        body = ttk.LabelFrame(vert_pw, text=" 歌詞時間軸 ╱ 分鏡表 ", padding=(8, 4))
+        vert_pw.add(body, minsize=120, stretch="always")
 
-        left_pane = ttk.Frame(body)
-        left_pane.grid(row=0, column=0, sticky="nsew")
+        # 水平可拖動：歌詞表格 | 分鏡表
+        horiz_pw = tk.PanedWindow(body, orient="horizontal", bg=DARK_BORDER, **_sash)
+        horiz_pw.pack(fill="both", expand=True)
+
+        left_pane = ttk.Frame(horiz_pw)
+        horiz_pw.add(left_pane, minsize=180)
         left_pane.columnconfigure(0, weight=1)
         left_pane.rowconfigure(0, weight=1)
         columns = ("start", "end", "kind", "text")
@@ -1162,20 +1168,19 @@ class LyricsSrtApp(tk.Tk):
         self.tree.bind("<Double-1>", self._begin_edit)
         self.tree.bind("<Button-3>", self._tree_right_click)
 
-        ttk.Separator(body, orient="vertical").grid(row=0, column=1, sticky="ns", padx=4)
-
-        right_pane = ttk.Frame(body)
-        right_pane.grid(row=0, column=2, sticky="nsew")
+        right_pane = ttk.Frame(horiz_pw)
+        horiz_pw.add(right_pane, minsize=300, stretch="always")
         self._build_storyboard_panel(right_pane)
 
-        # ── 右側：字幕預覽 + 字幕樣式 ──────────────────────────────
-        right = ttk.Frame(self)
-        right.grid(row=1, column=1, rowspan=3, sticky="nsew", padx=(0, 14), pady=(6, 0))
-        right.columnconfigure(0, weight=1)
-        right.rowconfigure(0, weight=1)
+        # ── 右側欄：字幕預覽（上）╱ 字幕樣式（下）垂直可拖動 ─────────
+        right_sidebar = ttk.Frame(outer_h_pw)
+        outer_h_pw.add(right_sidebar, minsize=180)
 
-        preview_panel = ttk.LabelFrame(right, text=" 字幕預覽 ", padding=8)
-        preview_panel.grid(row=0, column=0, sticky="nsew", pady=(0, 4))
+        vert_right_pw = tk.PanedWindow(right_sidebar, orient="vertical", bg=DARK_BORDER, **_sash)
+        vert_right_pw.pack(fill="both", expand=True, padx=(0, 14), pady=(6, 0))
+
+        preview_panel = ttk.LabelFrame(vert_right_pw, text=" 字幕預覽 ", padding=8)
+        vert_right_pw.add(preview_panel, minsize=120, stretch="always")
         preview_panel.rowconfigure(0, weight=1)
         preview_panel.columnconfigure(0, weight=1)
         self.preview_image_label = tk.Canvas(preview_panel, background="#08090b", highlightthickness=0)
@@ -1184,8 +1189,8 @@ class LyricsSrtApp(tk.Tk):
         self.preview_image_label.bind("<Button-4>", self._on_preview_scroll)
         self.preview_image_label.bind("<Button-5>", self._on_preview_scroll)
 
-        style_frame = ttk.LabelFrame(right, text=" 字幕樣式 ", padding=(10, 8))
-        style_frame.grid(row=1, column=0, sticky="ew")
+        style_frame = ttk.LabelFrame(vert_right_pw, text=" 字幕樣式 ", padding=(10, 8))
+        vert_right_pw.add(style_frame, minsize=80)
         style_frame.columnconfigure(5, weight=1)
 
         r = 0
@@ -1249,7 +1254,7 @@ class LyricsSrtApp(tk.Tk):
 
         # ── 底部列：播放控制 + 匯出 ──────────────────────────────────
         bottom = ttk.Frame(self, padding=(14, 6, 14, 12))
-        bottom.grid(row=4, column=0, columnspan=2, sticky="ew")
+        bottom.grid(row=2, column=0, sticky="ew")
         play_row = ttk.Frame(bottom)
         play_row.pack(fill="x")
         self.play_btn = ttk.Button(play_row, text="▶ 播放", command=self.toggle_playback)
