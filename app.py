@@ -854,8 +854,12 @@ class LyricsSrtApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title(APP_TITLE)
-        self.geometry("1360x960")
-        self.minsize(1150, 760)
+        _sw = self.winfo_screenwidth()
+        _sh = self.winfo_screenheight()
+        _w = min(1360, max(900, _sw - 60))
+        _h = min(960, max(640, _sh - 80))
+        self.geometry(f"{_w}x{_h}")
+        self.minsize(900, 640)
         self.audio_path: Path | None = None
         self.duration = 0.0
         self.reference_lyrics: list[str] = []
@@ -1175,6 +1179,11 @@ class LyricsSrtApp(tk.Tk):
         # ── 右側欄：字幕預覽（上）╱ 字幕樣式（下）垂直可拖動 ─────────
         right_sidebar = ttk.Frame(outer_h_pw)
         outer_h_pw.add(right_sidebar, minsize=180)
+
+        def _set_outer_sash():
+            w = self.winfo_width()
+            outer_h_pw.sash_place(0, max(w - 300, 500), 0)
+        self.after(150, _set_outer_sash)
 
         vert_right_pw = tk.PanedWindow(right_sidebar, orient="vertical", bg=DARK_BORDER, **_sash)
         vert_right_pw.pack(fill="both", expand=True, padx=(0, 14), pady=(6, 0))
