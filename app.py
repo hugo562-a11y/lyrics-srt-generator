@@ -34,6 +34,7 @@ from storyboard_data import (
     MODEL_MODE_NAMES,
     ANIMATION_STATES, ANIMATION_ACTIONS,
     get_char_field_options,
+    ASSET_TYPES, EVENT_TYPES, VISUAL_FOCUS_OPTIONS, TEXT_SAFE_AREAS, POSE_OVERRIDE_OPTIONS,
 )
 from prompt_assembler import assemble_image_prompt, assemble_video_prompt, assemble_negative_prompt
 
@@ -136,6 +137,14 @@ class StoryboardScene:
     emotions: list = field(default_factory=list)
     env_dynamics: list = field(default_factory=list)
     negative_opts: list = field(default_factory=list)
+    # ── scene event (v3) ──────────────────────────────────────────────────────
+    event: str = ""
+    interaction: str = ""
+    visual_focus: str = "（無）"
+    key_props: str = ""
+    text_safe_area: str = "無"
+    appearance_overrides: dict = field(default_factory=dict)  # {str(char_idx): state_id}
+    pose_overrides: list = field(default_factory=list)
 
 
 CHARACTER_COLORS = ["#4c8bf5", "#37d67a", "#f5a623", "#ff5c5c", "#c678dd", "#56b6c2", "#89ddff"]
@@ -147,15 +156,24 @@ class Character:
     name: str = "角色"
     age: str = "青年"
     gender: str = "男"
+    asset_type: str = "人類"        # v3: human/animal/robot/product/vehicle/prop/building
+    identity_features: str = ""     # v3: distinguishing features (face shape, color, markings)
     # ── physical Bible ────────────────────────────────────────────────────────
     appearance: str = ""        # free-form override (backward compat)
-    body_type: str = ""         # e.g. "slightly chubby"
-    hair: str = ""              # e.g. "short black hair"
-    face: str = ""              # e.g. "kind face, gentle smile lines"
-    clothing_top: str = ""      # e.g. "white shirt"
-    clothing_bottom: str = ""   # e.g. "khaki pants"
-    clothing_shoes: str = ""    # e.g. "white sneakers"
-    accessories: str = ""       # e.g. "red superhero cape"
+    body_type: str = ""
+    hair: str = ""
+    face: str = ""
+    clothing_top: str = ""
+    clothing_bottom: str = ""
+    clothing_shoes: str = ""
+    accessories: str = ""
+    # ── appearance states (v3) ────────────────────────────────────────────────
+    appearance_states: list = field(default_factory=list)   # [{id, name, desc}, ...]
+    default_appearance_state: str = ""
+    fixed_details: str = ""         # always-present accessories/markings
+    allowed_variations: str = ""    # what can change (e.g. "can wear raincoat")
+    pose_restrictions: str = ""     # poses to avoid unless overridden
+    reference_image_path: str = ""  # path to anchor / reference sheet image
     # ── consistency ───────────────────────────────────────────────────────────
     consistency_lock: bool = True
     consistency_terms: str = "same character design, consistent facial features"
@@ -177,6 +195,10 @@ class ProductionSettings:
     era: str = "現代"
     location: str = ""
     bg_desc: str = ""
+    # v3 additions
+    aspect_ratio: str = "9:16"
+    global_style: str = ""
+    relationship_rules: str = ""    # free-text size/scale relationships between assets
 
 
 # SCHEMA_VERSION imported from storyboard_data (currently = 2)
@@ -1935,6 +1957,57 @@ class LyricsSrtApp(tk.Tk):
 
         cb_dyn.bind("<<ComboboxSelected>>", on_dyn)
 
+        # ── Row 2: event / interaction / visual focus / text safe area ────────
+        row2 = ttk.Frame(parent)
+        row2.pack(fill="x", pady=(2, 0))
+
+        # Warning label (hidden when event is set)
+        _warn_lbl = ttk.Label(row2, text="⚠ 缺少畫面事件",
+                              foreground="#f5a623",
+                              font=("Microsoft JhengHei UI", 8))
+
+        def _refresh_event_warn(v: str) -> None:
+            if v and v != "（未設定）":
+                _warn_lbl.pack_forget()
+            else:
+                _warn_lbl.pack(side="right", padx=(0, 4))
+
+        ttk.Label(row2, text="事件", foreground=DARK_MUTED_FG).pack(side="left", padx=(4, 2))
+        evt_var = tk.StringVar(value=scene.event or "（未設定）")
+        cb_evt = ttk.Combobox(row2, textvariable=evt_var, values=EVENT_TYPES, width=14, state="normal")
+        cb_evt.pack(side="left", padx=(0, 4))
+
+        def on_evt(*_):
+            si = self._selected_scene
+            v = evt_var.get()
+            if si is not None and si < len(self.storyboard):
+                self.storyboard[si].event = "" if v == "（未設定）" else v
+            _refresh_event_warn(v)
+
+        evt_var.trace_add("write", on_evt)
+
+        ttk.Label(row2, text="互動", foreground=DARK_MUTED_FG).pack(side="left", padx=(0, 2))
+        iact_var = tk.StringVar(value=scene.interaction)
+        ttk.Entry(row2, textvariable=iact_var, width=20).pack(side="left", padx=(0, 4))
+        iact_var.trace_add("write", lambda *_: self._set_scene_field(
+            idx, "interaction", iact_var.get()))
+
+        ttk.Label(row2, text="畫面焦點", foreground=DARK_MUTED_FG).pack(side="left", padx=(0, 2))
+        foc_var = tk.StringVar(value=scene.visual_focus)
+        ttk.Combobox(row2, textvariable=foc_var, values=VISUAL_FOCUS_OPTIONS,
+                     width=10, state="readonly").pack(side="left", padx=(0, 4))
+        foc_var.trace_add("write", lambda *_: self._set_scene_field(
+            idx, "visual_focus", foc_var.get()))
+
+        ttk.Label(row2, text="字幕", foreground=DARK_MUTED_FG).pack(side="left", padx=(0, 2))
+        safe_var = tk.StringVar(value=scene.text_safe_area)
+        ttk.Combobox(row2, textvariable=safe_var, values=TEXT_SAFE_AREAS,
+                     width=6, state="readonly").pack(side="left", padx=(0, 4))
+        safe_var.trace_add("write", lambda *_: self._set_scene_field(
+            idx, "text_safe_area", safe_var.get()))
+
+        _refresh_event_warn(evt_var.get())
+
     def _make_comp_options(self, scene) -> list:
         generic = [
             "（無）", "三分法", "中央構圖", "對稱構圖", "三角構圖",
@@ -2019,7 +2092,7 @@ class LyricsSrtApp(tk.Tk):
         dlg = tk.Toplevel(self)
         dlg.configure(bg=DARK_BG)
         dlg.title(f"角色 {idx + 1} — 外觀設定")
-        dlg.geometry("620x500")
+        dlg.geometry("660x680")
         dlg.resizable(True, True)
         dlg.grab_set()
 
@@ -2037,8 +2110,27 @@ class LyricsSrtApp(tk.Tk):
                 if cur not in opts:
                     _var_refs[field].set(opts[0] if opts else "（無）")
 
+        # ── Scrollable container ──────────────────────────────────────────────
+        _canvas = tk.Canvas(dlg, bg=DARK_BG, highlightthickness=0)
+        _scroll = ttk.Scrollbar(dlg, orient="vertical", command=_canvas.yview)
+        _canvas.configure(yscrollcommand=_scroll.set)
+        _scroll.pack(side="right", fill="y")
+        _canvas.pack(side="left", fill="both", expand=True)
+        _inner = ttk.Frame(_canvas)
+        _canvas_win = _canvas.create_window((0, 0), window=_inner, anchor="nw")
+
+        def _on_inner_configure(e):
+            _canvas.configure(scrollregion=_canvas.bbox("all"))
+
+        def _on_canvas_configure(e):
+            _canvas.itemconfig(_canvas_win, width=e.width)
+
+        _inner.bind("<Configure>", _on_inner_configure)
+        _canvas.bind("<Configure>", _on_canvas_configure)
+        _canvas.bind_all("<MouseWheel>", lambda e: _canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
+
         # ── Identity ──────────────────────────────────────────────────────────
-        id_frame = ttk.Frame(dlg)
+        id_frame = ttk.Frame(_inner)
         id_frame.pack(fill="x", padx=14, pady=(12, 6))
 
         ttk.Label(id_frame, text=f"角色 {idx + 1}",
@@ -2052,6 +2144,12 @@ class LyricsSrtApp(tk.Tk):
             setattr(char, "name", name_var.get()),
             self._draw_storyboard_canvas(),
         ))
+
+        ttk.Label(id_frame, text="類型").pack(side="left")
+        atype_var = tk.StringVar(value=char.asset_type)
+        ttk.Combobox(_inner if False else id_frame, textvariable=atype_var,
+                     values=ASSET_TYPES, width=8, state="readonly").pack(side="left", padx=(4, 12))
+        atype_var.trace_add("write", lambda *_: setattr(char, "asset_type", atype_var.get()))
 
         ttk.Label(id_frame, text="性別").pack(side="left")
         gender_var = tk.StringVar(value=char.gender)
@@ -2077,10 +2175,32 @@ class LyricsSrtApp(tk.Tk):
         gender_cb.bind("<<ComboboxSelected>>", on_gender)
         age_cb.bind("<<ComboboxSelected>>", on_age)
 
-        ttk.Separator(dlg, orient="horizontal").pack(fill="x", padx=14, pady=(0, 4))
+        ttk.Separator(_inner, orient="horizontal").pack(fill="x", padx=14, pady=(0, 4))
+
+        # ── Identity features & fixed details ──────────────────────────────────
+        idf_lf = ttk.LabelFrame(_inner, text="辨識特徵與一致性設定")
+        idf_lf.pack(fill="x", padx=14, pady=(0, 6))
+
+        for lbl, attr, tip in [
+            ("辨識特徵", "identity_features", "臉型、毛色、標誌零件、圖案等（如：圓框眼鏡、右臉痣）"),
+            ("固定細節", "fixed_details",     "每幕必須保留的細節（如：銀色手錶、品牌貼紙）"),
+            ("允許變動", "allowed_variations", "可改變的項目（如：可加雨衣、可沾泥巴）"),
+            ("姿勢限制", "pose_restrictions",  "預設禁止的姿勢（如：避免仰頭、避免遮臉）"),
+        ]:
+            row = ttk.Frame(idf_lf)
+            row.pack(fill="x", padx=10, pady=3)
+            ttk.Label(row, text=lbl, width=7, anchor="e").pack(side="left")
+            v = tk.StringVar(value=getattr(char, attr))
+            ent = ttk.Entry(row, textvariable=v, width=46)
+            ent.pack(side="left", padx=(6, 4))
+            ttk.Label(row, text=tip, foreground=DARK_MUTED_FG,
+                      font=("Microsoft JhengHei UI", 7)).pack(side="left")
+            v.trace_add("write", lambda *_, a=attr, var=v: setattr(char, a, var.get()))
+
+        ttk.Separator(_inner, orient="horizontal").pack(fill="x", padx=14, pady=(0, 4))
 
         # ── Basic features ────────────────────────────────────────────────────
-        feat_lf = ttk.LabelFrame(dlg, text="基本特徵")
+        feat_lf = ttk.LabelFrame(_inner, text="基本特徵")
         feat_lf.pack(fill="x", padx=14, pady=(0, 6))
 
         feat_fields = [("體型", "body_type"), ("髮型", "hair"), ("臉部", "face")]
@@ -2097,7 +2217,7 @@ class LyricsSrtApp(tk.Tk):
                 char, f, "" if v.get() == "（無）" else v.get()))
 
         # ── Clothing ──────────────────────────────────────────────────────────
-        cloth_lf = ttk.LabelFrame(dlg, text="服裝")
+        cloth_lf = ttk.LabelFrame(_inner, text="服裝")
         cloth_lf.pack(fill="x", padx=14, pady=(0, 6))
 
         cloth_fields = [
@@ -2118,15 +2238,103 @@ class LyricsSrtApp(tk.Tk):
                 char, f, "" if v.get() == "（無）" else v.get()))
 
         # ── Custom description ────────────────────────────────────────────────
-        desc_lf = ttk.LabelFrame(dlg, text="自訂外觀描述（補充/覆蓋上方選項）")
+        desc_lf = ttk.LabelFrame(_inner, text="自訂外觀描述（補充/覆蓋上方選項）")
         desc_lf.pack(fill="x", padx=14, pady=(0, 6))
 
         appear_var = tk.StringVar(value=char.appearance)
         ttk.Entry(desc_lf, textvariable=appear_var).pack(fill="x", padx=10, pady=8)
         appear_var.trace_add("write", lambda *_: setattr(char, "appearance", appear_var.get()))
 
+        # ── Appearance states ─────────────────────────────────────────────────
+        states_lf = ttk.LabelFrame(_inner, text="造型狀態（日常/制服/雨天等，每行一筆：狀態名稱: 描述）")
+        states_lf.pack(fill="x", padx=14, pady=(0, 6))
+
+        states_hint = ttk.Label(states_lf,
+            text="範例：  日常: 深藍外套、白色球鞋   |   雨天: 在日常服外加黃色雨衣",
+            foreground=DARK_MUTED_FG, font=("Microsoft JhengHei UI", 7))
+        states_hint.pack(anchor="w", padx=10, pady=(4, 0))
+
+        def _states_to_text(states: list) -> str:
+            return "\n".join(f"{s.get('name', ''): <8}: {s.get('desc', '')}" for s in states)
+
+        def _text_to_states(txt: str) -> list:
+            result = []
+            for line in txt.splitlines():
+                if ":" in line:
+                    name, _, desc = line.partition(":")
+                    name = name.strip(); desc = desc.strip()
+                    if name:
+                        result.append({"id": name, "name": name, "desc": desc})
+            return result
+
+        states_txt = tk.Text(states_lf, width=60, height=5,
+                             bg=DARK_FIELD, fg=DARK_FG, insertbackground=DARK_FG,
+                             relief="flat", borderwidth=1,
+                             highlightthickness=1, highlightcolor=DARK_BORDER,
+                             highlightbackground=DARK_BORDER,
+                             font=("Microsoft JhengHei UI", 9))
+        states_txt.pack(fill="x", padx=10, pady=(4, 4))
+        states_txt.insert("1.0", _states_to_text(char.appearance_states))
+
+        def _states_on_change(e=None):
+            char.appearance_states = _text_to_states(states_txt.get("1.0", "end-1c"))
+
+        states_txt.bind("<FocusOut>", _states_on_change)
+        states_txt.bind("<KeyRelease>", _states_on_change)
+
+        def_state_row = ttk.Frame(states_lf)
+        def_state_row.pack(fill="x", padx=10, pady=(0, 6))
+        ttk.Label(def_state_row, text="預設造型狀態").pack(side="left")
+        def_state_var = tk.StringVar(value=char.default_appearance_state)
+        def_state_entry = ttk.Entry(def_state_row, textvariable=def_state_var, width=16)
+        def_state_entry.pack(side="left", padx=(6, 0))
+        def_state_var.trace_add("write", lambda *_: setattr(
+            char, "default_appearance_state", def_state_var.get()))
+
+        # ── Reference image ───────────────────────────────────────────────────
+        ref_lf = ttk.LabelFrame(_inner, text="定錨圖（Reference Sheet）")
+        ref_lf.pack(fill="x", padx=14, pady=(0, 6))
+
+        ref_hint = ttk.Label(ref_lf,
+            text="選擇自然站姿、平視鏡頭、乾淨背景的參考圖；未設定時一致性較低。",
+            foreground=DARK_MUTED_FG, font=("Microsoft JhengHei UI", 7))
+        ref_hint.pack(anchor="w", padx=10, pady=(4, 0))
+
+        ref_row = ttk.Frame(ref_lf)
+        ref_row.pack(fill="x", padx=10, pady=6)
+        ref_var = tk.StringVar(value=char.reference_image_path)
+        ref_entry = ttk.Entry(ref_row, textvariable=ref_var, width=46)
+        ref_entry.pack(side="left", padx=(0, 6))
+        ref_var.trace_add("write", lambda *_: setattr(
+            char, "reference_image_path", ref_var.get()))
+
+        def _browse_ref():
+            from tkinter import filedialog as _fd
+            p = _fd.askopenfilename(
+                title="選擇定錨圖",
+                filetypes=[("圖片", "*.png *.jpg *.jpeg *.webp *.bmp"), ("所有檔案", "*.*")],
+            )
+            if p:
+                ref_var.set(p)
+
+        ttk.Button(ref_row, text="瀏覽…", command=_browse_ref).pack(side="left")
+
+        ref_warn = ttk.Label(ref_lf,
+            text="⚠ 尚未設定定錨圖，跨場景角色一致性較低",
+            foreground="#f5a623", font=("Microsoft JhengHei UI", 8))
+        if not char.reference_image_path:
+            ref_warn.pack(anchor="w", padx=10, pady=(0, 4))
+
+        def _check_ref_warn(*_):
+            if ref_var.get().strip():
+                ref_warn.pack_forget()
+            else:
+                ref_warn.pack(anchor="w", padx=10, pady=(0, 4))
+
+        ref_var.trace_add("write", _check_ref_warn)
+
         # ── Consistency ───────────────────────────────────────────────────────
-        cons_lf = ttk.LabelFrame(dlg, text="一致性設定")
+        cons_lf = ttk.LabelFrame(_inner, text="一致性設定")
         cons_lf.pack(fill="x", padx=14, pady=(0, 6))
 
         cons_row = ttk.Frame(cons_lf)
@@ -2141,7 +2349,7 @@ class LyricsSrtApp(tk.Tk):
         ttk.Entry(cons_row, textvariable=ct_var, width=32).pack(side="left", padx=(4, 0))
         ct_var.trace_add("write", lambda *_: setattr(char, "consistency_terms", ct_var.get()))
 
-        ttk.Button(dlg, text="關閉", command=dlg.destroy).pack(pady=(4, 10))
+        ttk.Button(_inner, text="關閉", command=dlg.destroy).pack(pady=(4, 12))
 
     def _toggle_char_in_scene(self, char_idx: int) -> None:
         si = self._selected_scene
@@ -2969,6 +3177,12 @@ class LyricsSrtApp(tk.Tk):
                     "end_state": s.end_state,
                     "emotions": s.emotions, "env_dynamics": s.env_dynamics,
                     "negative_opts": s.negative_opts,
+                    # v3
+                    "event": s.event, "interaction": s.interaction,
+                    "visual_focus": s.visual_focus, "key_props": s.key_props,
+                    "text_safe_area": s.text_safe_area,
+                    "appearance_overrides": s.appearance_overrides,
+                    "pose_overrides": s.pose_overrides,
                 }
                 for s in self.storyboard
             ],
@@ -2981,6 +3195,15 @@ class LyricsSrtApp(tk.Tk):
                     "clothing_shoes": c.clothing_shoes, "accessories": c.accessories,
                     "consistency_lock": c.consistency_lock,
                     "consistency_terms": c.consistency_terms,
+                    # v3
+                    "asset_type": c.asset_type,
+                    "identity_features": c.identity_features,
+                    "appearance_states": c.appearance_states,
+                    "default_appearance_state": c.default_appearance_state,
+                    "fixed_details": c.fixed_details,
+                    "allowed_variations": c.allowed_variations,
+                    "pose_restrictions": c.pose_restrictions,
+                    "reference_image_path": c.reference_image_path,
                 }
                 for c in self.characters
             ],
@@ -2998,6 +3221,9 @@ class LyricsSrtApp(tk.Tk):
                 "era": self.production.era,
                 "location": self.production.location,
                 "bg_desc": self.production.bg_desc,
+                "aspect_ratio": self.production.aspect_ratio,
+                "global_style": self.production.global_style,
+                "relationship_rules": self.production.relationship_rules,
             },
         }
         with open(output, "w", encoding="utf-8") as f:
@@ -3097,6 +3323,13 @@ class LyricsSrtApp(tk.Tk):
                     emotions=list(sd.get("emotions", [])),
                     env_dynamics=list(sd.get("env_dynamics", [])),
                     negative_opts=list(sd.get("negative_opts", [])),
+                    event=sd.get("event", ""),
+                    interaction=sd.get("interaction", ""),
+                    visual_focus=sd.get("visual_focus", "（無）"),
+                    key_props=sd.get("key_props", ""),
+                    text_safe_area=sd.get("text_safe_area", "無"),
+                    appearance_overrides=dict(sd.get("appearance_overrides", {})),
+                    pose_overrides=list(sd.get("pose_overrides", [])),
                 ))
             self.characters.clear()
             for cd in data.get("characters", []):
@@ -3114,6 +3347,14 @@ class LyricsSrtApp(tk.Tk):
                     accessories=cd.get("accessories", ""),
                     consistency_lock=cd.get("consistency_lock", True),
                     consistency_terms=cd.get("consistency_terms", "same character design, consistent facial features"),
+                    asset_type=cd.get("asset_type", "人類"),
+                    identity_features=cd.get("identity_features", ""),
+                    appearance_states=list(cd.get("appearance_states", [])),
+                    default_appearance_state=cd.get("default_appearance_state", ""),
+                    fixed_details=cd.get("fixed_details", ""),
+                    allowed_variations=cd.get("allowed_variations", ""),
+                    pose_restrictions=cd.get("pose_restrictions", ""),
+                    reference_image_path=cd.get("reference_image_path", ""),
                 ))
             self.scene_groups.clear()
             for gd in data.get("scene_groups", []):
@@ -3136,9 +3377,12 @@ class LyricsSrtApp(tk.Tk):
             ]
             if "production" in data:
                 pd = data["production"]
-                self.production.era      = pd.get("era", "現代")
-                self.production.location = pd.get("location", "")
-                self.production.bg_desc  = pd.get("bg_desc", "")
+                self.production.era               = pd.get("era", "現代")
+                self.production.location          = pd.get("location", "")
+                self.production.bg_desc           = pd.get("bg_desc", "")
+                self.production.aspect_ratio      = pd.get("aspect_ratio", "9:16")
+                self.production.global_style      = pd.get("global_style", "")
+                self.production.relationship_rules = pd.get("relationship_rules", "")
                 for attr in ("era", "location"):
                     var = getattr(self, f"_prod_{attr}_var", None)
                     if var is not None:

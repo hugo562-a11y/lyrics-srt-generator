@@ -1,7 +1,7 @@
 """Storyboard data definitions — lookup tables, constants, rules."""
 from __future__ import annotations
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # ── Shot & tone (mirrors app.py; canonical source for prompt_assembler) ──────
 
@@ -375,6 +375,104 @@ LYRIC_RULES = [
     {"keywords": ["布丁"],        "suggestions": {"shot_type": "中近景", "camera_movement": "慢速推近", "emotion": "幸福"}},
     {"keywords": ["牽手", "拉手"],"suggestions": {"camera_angle": "手部特寫", "camera_movement": "由手移至臉", "emotion": "溫馨"}},
     {"keywords": ["笑", "開心", "快樂"], "suggestions": {"camera_movement": "平穩跟拍", "env_dynamic": "頭髮隨微風飄動", "emotion": "幸福"}},
+]
+
+# ── Asset types ──────────────────────────────────────────────────────────────
+
+ASSET_TYPES = [
+    "人類", "動物", "角色生物", "機器人", "交通工具", "產品", "道具", "建築",
+]
+ASSET_TYPES_EN: dict[str, str] = {
+    "人類": "human character",
+    "動物": "animal",
+    "角色生物": "fictional creature",
+    "機器人": "robot / android",
+    "交通工具": "vehicle",
+    "產品": "product",
+    "道具": "prop / object",
+    "建築": "architectural element",
+}
+
+# ── Visual event types ────────────────────────────────────────────────────────
+
+EVENT_TYPES = [
+    "（未設定）",
+    "對話", "交付物品", "追逐", "工作", "練習", "探索", "發現",
+    "轉身離開", "回頭看", "展示功能", "變形啟動", "團隊合作",
+    "獨自沉思", "靜靜等待", "互相擁抱", "牽手同行",
+    "操作物件", "觀察環境", "奔向對方", "分離道別",
+    "儀式／慶典", "衝突對峙", "救援行動", "驚喜揭示",
+]
+EVENT_TYPES_EN: dict[str, str] = {
+    "（未設定）": "",
+    "對話": "two characters in conversation",
+    "交付物品": "handing an object to another character",
+    "追逐": "chase sequence",
+    "工作": "character working or performing a task",
+    "練習": "character practicing or training",
+    "探索": "character exploring the environment",
+    "發現": "character discovering something",
+    "轉身離開": "character turning and walking away",
+    "回頭看": "character looking back over their shoulder",
+    "展示功能": "product or device demonstrating its function",
+    "變形啟動": "robot or vehicle transforming or activating",
+    "團隊合作": "group of characters collaborating",
+    "獨自沉思": "character alone in quiet contemplation",
+    "靜靜等待": "character waiting calmly",
+    "互相擁抱": "characters embracing each other",
+    "牽手同行": "characters walking hand in hand",
+    "操作物件": "character interacting with an object or device",
+    "觀察環境": "character taking in the surrounding environment",
+    "奔向對方": "character running toward another character",
+    "分離道別": "characters parting ways, saying goodbye",
+    "儀式／慶典": "ritual or celebration moment",
+    "衝突對峙": "characters in confrontation",
+    "救援行動": "rescue or protective action",
+    "驚喜揭示": "surprise or revelation moment",
+}
+
+# ── Visual focus options ──────────────────────────────────────────────────────
+
+VISUAL_FOCUS_OPTIONS = [
+    "（無）",
+    "表情", "雙眼", "雙手", "嘴唇",
+    "道具特寫", "產品功能", "物件交接",
+    "環境規模", "背景景深", "剪影輪廓",
+    "眼神交流", "動作肢體", "傷痕細節",
+]
+VISUAL_FOCUS_EN: dict[str, str] = {
+    "（無）": "",
+    "表情": "focus on facial expression",
+    "雙眼": "close focus on the eyes",
+    "雙手": "close focus on the hands",
+    "嘴唇": "close focus on lips and mouth",
+    "道具特寫": "extreme close-up on the prop",
+    "產品功能": "highlighting the product's key function",
+    "物件交接": "focus on the object being passed between characters",
+    "環境規模": "wide shot emphasizing the scale of the environment",
+    "背景景深": "shallow depth of field with bokeh background",
+    "剪影輪廓": "silhouette against the background",
+    "眼神交流": "characters making direct eye contact",
+    "動作肢體": "focus on body movement and physicality",
+    "傷痕細節": "close-up on damage or wear details",
+}
+
+# ── Text safe area ────────────────────────────────────────────────────────────
+
+TEXT_SAFE_AREAS = ["無", "上方", "下方", "左側", "右側"]
+TEXT_SAFE_AREA_EN: dict[str, str] = {
+    "無": "",
+    "上方": "keep upper portion of frame uncluttered for text overlay",
+    "下方": "keep lower portion of frame clear for subtitle or caption",
+    "左側": "keep left side of frame clear for text",
+    "右側": "keep right side of frame clear for text",
+}
+
+# ── Pose override options ─────────────────────────────────────────────────────
+
+POSE_OVERRIDE_OPTIONS = [
+    "允許仰頭", "允許背對鏡頭", "允許奔跑", "允許閉眼",
+    "允許遮住臉", "允許蹲伏", "允許跳躍", "允許危險動作",
 ]
 
 # ── Scene templates ───────────────────────────────────────────────────────────
