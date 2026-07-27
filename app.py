@@ -1049,6 +1049,44 @@ class LyricsSrtApp(tk.Tk):
         except Exception:
             pass
 
+    def _build_menubar(self) -> None:
+        _M = dict(tearoff=0, bg=DARK_PANEL, fg=DARK_FG,
+                  activebackground=DARK_ACCENT, activeforeground="#ffffff")
+        menubar = tk.Menu(self, bg=DARK_PANEL, fg=DARK_FG,
+                          activebackground=DARK_ACCENT, activeforeground="#ffffff")
+
+        im = tk.Menu(menubar, **_M)
+        im.add_command(label="匯入音檔…",    command=self.import_audio)
+        im.add_command(label="匯入歌詞檔…",  command=self.import_lyrics)
+        im.add_command(label="匯入影像…",    command=self._import_image_clip)
+        menubar.add_cascade(label="匯入", menu=im)
+
+        fm = tk.Menu(menubar, **_M)
+        fm.add_command(label="存檔",  command=self.save_project, accelerator="Ctrl+S")
+        fm.add_command(label="載入…", command=self.load_project, accelerator="Ctrl+O")
+        menubar.add_cascade(label="檔案", menu=fm)
+
+        em = tk.Menu(menubar, **_M)
+        em.add_command(label="匯出 SRT",          command=self.export_srt)
+        em.add_command(label="匯出 PNG 動態字幕", command=self.export_dynamic_png)
+        em.add_command(label="匯出卡拉 OK 音軌",  command=self.export_karaoke_stems)
+        em.add_separator()
+        em.add_command(label="打包為 XML…",        command=self.export_xml)
+        self._export_menu = em
+        self._MENU_PNG     = 1   # index in em
+        self._MENU_KARAOKE = 2
+        menubar.add_cascade(label="匯出", menu=em)
+
+        self.config(menu=menubar)
+
+    def _set_png_state(self, state: str) -> None:
+        if hasattr(self, "_export_menu"):
+            self._export_menu.entryconfig(self._MENU_PNG, state=state)
+
+    def _set_karaoke_state(self, state: str) -> None:
+        if hasattr(self, "_export_menu"):
+            self._export_menu.entryconfig(self._MENU_KARAOKE, state=state)
+
     def _build_ui(self) -> None:
         style = ttk.Style(self)
         # "clam" 是唯一能讓 ttk 元件完全套用自訂顏色的內建主題；
@@ -1086,20 +1124,19 @@ class LyricsSrtApp(tk.Tk):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)   # outer_h_pw expands
 
-        # ── 頂部列：檔案操作 ──────────────────────────────────────────
-        top = ttk.Frame(self, padding=(14, 10, 14, 6))
+        # ── 選單列 ────────────────────────────────────────────────────
+        self._build_menubar()
+
+        # ── 頂部狀態列 ────────────────────────────────────────────────
+        top = ttk.Frame(self, padding=(14, 6, 14, 4))
         top.grid(row=0, column=0, sticky="ew")
-        top.columnconfigure(1, weight=1)
-        ttk.Button(top, text="匯入音檔", command=self.import_audio).grid(row=0, column=0, padx=(0, 10))
+        top.columnconfigure(0, weight=1)
         self.file_var = tk.StringVar(value="尚未選擇音檔")
-        ttk.Label(top, textvariable=self.file_var, anchor="w").grid(row=0, column=1, sticky="ew")
+        ttk.Label(top, textvariable=self.file_var, anchor="w").grid(row=0, column=0, sticky="ew")
         self.duration_var = tk.StringVar(value="長度：--")
-        ttk.Label(top, textvariable=self.duration_var).grid(row=0, column=2, padx=(10, 0))
-        ttk.Button(top, text="存檔", command=self.save_project).grid(row=0, column=3, padx=(16, 4))
-        ttk.Button(top, text="載入", command=self.load_project).grid(row=0, column=4, padx=(4, 8))
-        ttk.Button(top, text="匯入歌詞檔", command=self.import_lyrics).grid(row=0, column=5, padx=(16, 8))
+        ttk.Label(top, textvariable=self.duration_var).grid(row=0, column=1, padx=(10, 0))
         self.lyrics_file_var = tk.StringVar(value="未使用參考歌詞")
-        ttk.Label(top, textvariable=self.lyrics_file_var, foreground=MUSIC_COLOR).grid(row=0, column=6, sticky="w")
+        ttk.Label(top, textvariable=self.lyrics_file_var, foreground=MUSIC_COLOR).grid(row=0, column=2, padx=(10, 0), sticky="w")
 
         # ── 可拖動主框架：左內容 | 右側欄 ──────────────────────────────
         _sash = dict(sashwidth=6, sashpad=0, sashrelief="flat")
@@ -1301,12 +1338,6 @@ class LyricsSrtApp(tk.Tk):
         ttk.Button(play_row, text="✂斷句", command=self.split_at_playhead).pack(side="left", padx=(0, 4))
         ttk.Button(play_row, text="復原", command=self.undo).pack(side="left", padx=(8, 0))
         ttk.Button(play_row, text="重做", command=self.redo).pack(side="left", padx=(4, 0))
-        ttk.Separator(play_row, orient="vertical").pack(side="left", fill="y", padx=8)
-        self.karaoke_btn = ttk.Button(play_row, text="匯出卡拉OK", command=self.export_karaoke_stems)
-        self.karaoke_btn.pack(side="left", padx=(0, 4))
-        ttk.Button(play_row, text="匯出 SRT", command=self.export_srt).pack(side="left", padx=(0, 4))
-        self.png_export_btn = ttk.Button(play_row, text="匯出 PNG", command=self.export_dynamic_png)
-        self.png_export_btn.pack(side="left")
         ttk.Label(play_row, text="雙擊欄位可編輯", foreground=DARK_MUTED_FG).pack(side="left", padx=(16, 0))
 
     def _check_dependencies_async(self) -> None:
@@ -3075,19 +3106,19 @@ class LyricsSrtApp(tk.Tk):
                     self._set_progress_status(f"聲波顯示無法產生（不影響其他功能）：{payload}", busy=False)
                 elif event == "png_done":
                     output, frames = payload
-                    self.png_export_btn.configure(state="normal")
+                    self._set_png_state("normal")
                     self._set_progress_status(f"已輸出 {frames:,} 張透明 PNG：{output}", busy=False)
                     messagebox.showinfo(APP_TITLE, f"動態字幕 PNG 序列已完成。\n\n{output}\n\n規格：透明 RGBA、30 fps、可直接以影像序列匯入剪輯軟體。")
                 elif event == "png_error":
-                    self.png_export_btn.configure(state="normal")
+                    self._set_png_state("normal")
                     self._set_progress_status("動態 PNG 匯出失敗", busy=False)
                     messagebox.showerror(APP_TITLE, f"無法輸出動態字幕 PNG：\n{payload}")
                 elif event == "karaoke_done":
-                    self.karaoke_btn.configure(state="normal")
+                    self._set_karaoke_state("normal")
                     self._set_progress_status(f"已輸出人聲／伴奏：{payload}", busy=False)
                     messagebox.showinfo(APP_TITLE, f"卡拉OK人聲／伴奏分軌已完成。\n\n{payload}")
                 elif event == "karaoke_error":
-                    self.karaoke_btn.configure(state="normal")
+                    self._set_karaoke_state("normal")
                     self._set_progress_status("人聲／伴奏分軌失敗", busy=False)
                     messagebox.showerror(APP_TITLE, f"無法輸出人聲／伴奏：\n{payload}")
                 elif event == "img_test_done":
@@ -3550,7 +3581,7 @@ class LyricsSrtApp(tk.Tk):
         output = Path(parent) / f"{stem}_動態字幕PNG_{width}x{height}_30fps"
         if output.exists():
             shutil.rmtree(output, ignore_errors=True)
-        self.png_export_btn.configure(state="disabled")
+        self._set_png_state("disabled")
         self._set_progress_status("正在準備動態字幕 PNG 匯出…", busy=True)
         # 複製時間軸資料，讓輸出期間仍可安全操作或繼續校正 UI。
         snapshot = copy.deepcopy(active)
@@ -3757,7 +3788,7 @@ class LyricsSrtApp(tk.Tk):
         if output.exists() and any(output.iterdir()):
             messagebox.showerror(APP_TITLE, f"輸出資料夾已存在且不是空的：\n{output}\n\n請選擇其他位置。")
             return
-        self.karaoke_btn.configure(state="disabled")
+        self._set_karaoke_state("disabled")
         self._set_progress_status("正在分離人聲與伴奏，首次使用會下載 Demucs 模型…", busy=True)
         threading.Thread(target=self._run_karaoke_export, args=(self.audio_path, output), daemon=True).start()
 
@@ -3953,6 +3984,62 @@ class LyricsSrtApp(tk.Tk):
             except Exception as exc:
                 self.events.put(("img_error", str(exc)))
         threading.Thread(target=_do, daemon=True).start()
+
+    def export_xml(self) -> None:
+        """將整個專案打包成 XML 檔，方便跨工具交換。"""
+        import xml.etree.ElementTree as ET
+        path = filedialog.asksaveasfilename(
+            title="打包為 XML",
+            defaultextension=".xml",
+            filetypes=[("XML 檔案", "*.xml"), ("所有檔案", "*.*")],
+        )
+        if not path:
+            return
+        root = ET.Element("MvCutProject")
+        # 音檔
+        audio_el = ET.SubElement(root, "audio")
+        audio_el.set("path", str(self.audio_path) if self.audio_path else "")
+        audio_el.set("duration", str(self.duration))
+        # 參考歌詞
+        ref_el = ET.SubElement(root, "referenceLyrics")
+        ref_el.set("path", str(self.lyrics_path) if hasattr(self, "lyrics_path") and self.lyrics_path else "")
+        # 片段
+        segs_el = ET.SubElement(root, "segments")
+        for i, seg in enumerate(self.segments):
+            s = ET.SubElement(segs_el, "segment")
+            s.set("index", str(i))
+            s.set("start", f"{seg.start:.3f}")
+            s.set("end", f"{seg.end:.3f}")
+            s.set("kind", seg.kind)
+            s.set("deleted", "1" if seg.deleted else "0")
+            s.text = seg.text
+        # 角色
+        chars_el = ET.SubElement(root, "characters")
+        for ch in self.characters:
+            c = ET.SubElement(chars_el, "character")
+            c.set("name", ch.name)
+            c.set("description", ch.description)
+        # 分鏡場景
+        sb_el = ET.SubElement(root, "storyboard")
+        for i, sc in enumerate(self.storyboard):
+            scene_el = ET.SubElement(sb_el, "scene")
+            scene_el.set("index", str(i))
+            scene_el.set("name", sc.scene_name)
+            scene_el.set("description", sc.description)
+            scene_el.set("mood", sc.mood)
+            scene_el.set("imagePrompt", sc.image_prompt)
+            ids_el = ET.SubElement(scene_el, "lyricSegIds")
+            ids_el.text = ",".join(str(x) for x in sc.lyric_seg_ids)
+            texts_el = ET.SubElement(scene_el, "lyricTexts")
+            texts_el.text = "||".join(sc.lyric_texts)
+        # 製作設定
+        prod_el = ET.SubElement(root, "production")
+        prod_el.set("title", self.prod_settings.get("title", "") if hasattr(self, "prod_settings") else "")
+        prod_el.set("artist", self.prod_settings.get("artist", "") if hasattr(self, "prod_settings") else "")
+        tree = ET.ElementTree(root)
+        ET.indent(tree, space="  ")
+        tree.write(path, encoding="utf-8", xml_declaration=True)
+        messagebox.showinfo(APP_TITLE, f"已匯出 XML：\n{path}")
 
 
 if __name__ == "__main__":
