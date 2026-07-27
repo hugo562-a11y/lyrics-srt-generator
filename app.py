@@ -1000,6 +1000,8 @@ class LyricsSrtApp(tk.Tk):
         self.bind_all("<Right>",       lambda _e: self._nudge_playhead(+_frame))
         self.bind_all("<Shift-Left>",  lambda _e: self._nudge_playhead(-5 * _frame))
         self.bind_all("<Shift-Right>", lambda _e: self._nudge_playhead(+5 * _frame))
+        self.bind_all("<Home>", lambda _e: self._waveform_seek(0.0))
+        self.bind_all("<End>",  lambda _e: self._waveform_seek(self.duration))
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.after(120, self._poll_events)
         self.after(250, self._check_dependencies_async)
