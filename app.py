@@ -1177,9 +1177,9 @@ class LyricsSrtApp(tk.Tk):
         horiz_pw.add(left_pane, minsize=180)
         left_pane.columnconfigure(0, weight=1)
         left_pane.rowconfigure(0, weight=1)
-        columns = ("start", "end", "kind", "text")
+        columns = ("start", "end", "kind", "text", "scene")
         self.tree = ttk.Treeview(left_pane, columns=columns, show="headings", selectmode="browse")
-        for key, title, width in (("start", "開始", 90), ("end", "結束", 90), ("kind", "類型", 60), ("text", "文字", 180)):
+        for key, title, width in (("start", "開始", 90), ("end", "結束", 90), ("kind", "類型", 60), ("text", "文字", 180), ("scene", "場景", 56)):
             self.tree.heading(key, text=title)
             self.tree.column(key, width=width, anchor="center" if key != "text" else "w", stretch=key == "text")
         self.tree.grid(row=0, column=0, sticky="nsew")
@@ -1190,10 +1190,6 @@ class LyricsSrtApp(tk.Tk):
         self.tree.bind("<Double-1>", self._begin_edit)
         self.tree.bind("<Button-3>", self._tree_right_click)
 
-        tree_btn_bar = ttk.Frame(left_pane)
-        tree_btn_bar.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(2, 0))
-        self._assign_btn = ttk.Button(tree_btn_bar, text="分配場景▾", command=self._open_assign_scene_menu_from_btn)
-        self._assign_btn.pack(side="left", padx=(2, 0))
 
         right_pane = ttk.Frame(horiz_pw)
         horiz_pw.add(right_pane, minsize=300, stretch="always")
@@ -2620,9 +2616,6 @@ class LyricsSrtApp(tk.Tk):
         self.tree.selection_set(item)
         self._open_scene_assign_menu(event.x_root, event.y_root)
 
-    def _open_assign_scene_menu_from_btn(self) -> None:
-        btn = self._assign_btn
-        self._open_scene_assign_menu(btn.winfo_rootx(), btn.winfo_rooty() + btn.winfo_height())
 
     def _open_scene_assign_menu(self, x_root: int, y_root: int) -> None:
         sel = self.tree.selection()
@@ -2655,12 +2648,14 @@ class LyricsSrtApp(tk.Tk):
         if text and text not in self.storyboard[scene_idx].lyric_texts:
             self.storyboard[scene_idx].lyric_texts.append(text)
             self._draw_storyboard_canvas()
+            self.refresh_tree()
 
     def _remove_lyric_from_scene(self, text: str, scene_idx: int) -> None:
         if 0 <= scene_idx < len(self.storyboard):
             try:
                 self.storyboard[scene_idx].lyric_texts.remove(text)
                 self._draw_storyboard_canvas()
+                self.refresh_tree()
             except ValueError:
                 pass
 
@@ -2770,8 +2765,13 @@ class LyricsSrtApp(tk.Tk):
 
     def play_clicked_row(self, event: tk.Event) -> None:
         row = self.tree.identify_row(event.y)
-        if row:
-            self._activate_segment(int(row))
+        if not row:
+            return
+        if self.tree.identify_column(event.x) == "#5":
+            self.tree.selection_set(row)
+            self._open_scene_assign_menu(event.x_root, event.y_root)
+            return
+        self._activate_segment(int(row))
 
     def _activate_segment(self, index: int) -> None:
         """選取該句並移動播放頭；只有原本就在播放時才接續播放，不會自己開始播放。"""
@@ -3076,10 +3076,15 @@ class LyricsSrtApp(tk.Tk):
     def refresh_tree(self) -> None:
         selected = self.tree.selection()
         for item in self.tree.get_children(): self.tree.delete(item)
+        text_to_scenes: dict[str, list[int]] = {}
+        for si, sc in enumerate(self.storyboard):
+            for lt in sc.lyric_texts:
+                text_to_scenes.setdefault(lt, []).append(si + 1)
         for i, segment in enumerate(self.segments):
+            scene_label = " ".join(str(n) for n in text_to_scenes.get(segment.text, []))
             tag = "deleted" if segment.deleted else ("music" if segment.kind == MUSIC_KIND else "lyric")
             tags = (tag, "playing") if i == self.playing_row else (tag,)
-            self.tree.insert("", "end", iid=str(i), values=(format_timecode(segment.start), format_timecode(segment.end), segment.kind, segment.text), tags=tags)
+            self.tree.insert("", "end", iid=str(i), values=(format_timecode(segment.start), format_timecode(segment.end), segment.kind, segment.text, scene_label), tags=tags)
         self.tree.tag_configure("music", foreground=MUSIC_COLOR)
         self.tree.tag_configure("deleted", foreground=DELETED_COLOR)
         self.tree.tag_configure("playing", background="#2b4a72", foreground="#eaf4ff")
