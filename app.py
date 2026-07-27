@@ -1297,6 +1297,8 @@ class LyricsSrtApp(tk.Tk):
         ttk.Button(play_row, text="＋新增", command=self.add_segment).pack(side="left", padx=(0, 4))
         ttk.Button(play_row, text="刪除", command=self.toggle_deleted).pack(side="left", padx=(0, 4))
         ttk.Button(play_row, text="✂斷句", command=self.split_at_playhead).pack(side="left", padx=(0, 4))
+        self._assign_btn = ttk.Button(play_row, text="分配場景▾", command=self._open_assign_scene_menu_from_btn)
+        self._assign_btn.pack(side="left", padx=(0, 4))
         ttk.Button(play_row, text="復原", command=self.undo).pack(side="left", padx=(8, 0))
         ttk.Button(play_row, text="重做", command=self.redo).pack(side="left", padx=(4, 0))
         ttk.Separator(play_row, orient="vertical").pack(side="left", fill="y", padx=8)
@@ -2613,17 +2615,34 @@ class LyricsSrtApp(tk.Tk):
         if not item:
             return
         self.tree.selection_set(item)
+        self._open_scene_assign_menu(event.x_root, event.y_root)
+
+    def _open_assign_scene_menu_from_btn(self) -> None:
+        btn = self._assign_btn
+        self._open_scene_assign_menu(btn.winfo_rootx(), btn.winfo_rooty() + btn.winfo_height())
+
+    def _open_scene_assign_menu(self, x_root: int, y_root: int) -> None:
+        sel = self.tree.selection()
+        if not sel:
+            return
+        item = sel[0]
+        values = self.tree.item(item, "values")
+        if not values or len(values) < 4:
+            return
+        text = str(values[3])
         menu = tk.Menu(self, tearoff=0)
         if not self.storyboard:
             menu.add_command(label="先新增場景（分鏡表）再指定", state="disabled")
         else:
             for i, scene in enumerate(self.storyboard):
+                already = text in scene.lyric_texts
                 preview = ("、".join(scene.lyric_texts[:2]) + "…") if scene.lyric_texts else "（空）"
-                menu.add_command(
-                    label=f"加入場景 {i + 1}  {preview}",
-                    command=lambda item_id=item, idx=i: self._assign_lyric_to_scene(item_id, idx),
-                )
-        menu.tk_popup(event.x_root, event.y_root)
+                label = f"{'✓ ' if already else ''}場景 {i + 1}  {preview}"
+                if already:
+                    menu.add_command(label=label, command=lambda idx=i, t=text: self._remove_lyric_from_scene(t, idx))
+                else:
+                    menu.add_command(label=label, command=lambda iid=item, idx=i: self._assign_lyric_to_scene(iid, idx))
+        menu.tk_popup(x_root, y_root)
 
     def _assign_lyric_to_scene(self, tree_item: str, scene_idx: int) -> None:
         values = self.tree.item(tree_item, "values")
@@ -2633,6 +2652,14 @@ class LyricsSrtApp(tk.Tk):
         if text and text not in self.storyboard[scene_idx].lyric_texts:
             self.storyboard[scene_idx].lyric_texts.append(text)
             self._draw_storyboard_canvas()
+
+    def _remove_lyric_from_scene(self, text: str, scene_idx: int) -> None:
+        if 0 <= scene_idx < len(self.storyboard):
+            try:
+                self.storyboard[scene_idx].lyric_texts.remove(text)
+                self._draw_storyboard_canvas()
+            except ValueError:
+                pass
 
     def _build_setting_desc(self) -> str:
         p = self.production
