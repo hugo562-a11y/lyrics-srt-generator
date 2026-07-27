@@ -665,12 +665,14 @@ class WaveformView(ttk.Frame):
             if not coords:
                 continue
             dist = abs(coords[0] - x)
-            if dist <= best_dist:
+            tag = next((t for t in self.canvas.gettags(item) if t.startswith("handle:")), None)
+            if not tag:
+                continue
+            _, idx_str, edge = tag.split(":")
+            # 同距離時優先選字尾（end），避免相鄰兩句重疊時誤抓到下一句字首
+            if dist < best_dist or (dist == best_dist and edge == "end"):
                 best_dist = dist
-                tag = next((t for t in self.canvas.gettags(item) if t.startswith("handle:")), None)
-                if tag:
-                    _, idx_str, edge = tag.split(":")
-                    best = (int(idx_str), edge)
+                best = (int(idx_str), edge)
         return best
 
     def _find_segment(self, x: float, y: float) -> int | None:
