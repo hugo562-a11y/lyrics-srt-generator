@@ -1190,6 +1190,11 @@ class LyricsSrtApp(tk.Tk):
         self.tree.bind("<Double-1>", self._begin_edit)
         self.tree.bind("<Button-3>", self._tree_right_click)
 
+        tree_btn_bar = ttk.Frame(left_pane)
+        tree_btn_bar.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(2, 0))
+        self._assign_btn = ttk.Button(tree_btn_bar, text="分配場景▾", command=self._open_assign_scene_menu_from_btn)
+        self._assign_btn.pack(side="left", padx=(2, 0))
+
         right_pane = ttk.Frame(horiz_pw)
         horiz_pw.add(right_pane, minsize=300, stretch="always")
         self._build_storyboard_panel(right_pane)
@@ -1297,8 +1302,6 @@ class LyricsSrtApp(tk.Tk):
         ttk.Button(play_row, text="＋新增", command=self.add_segment).pack(side="left", padx=(0, 4))
         ttk.Button(play_row, text="刪除", command=self.toggle_deleted).pack(side="left", padx=(0, 4))
         ttk.Button(play_row, text="✂斷句", command=self.split_at_playhead).pack(side="left", padx=(0, 4))
-        self._assign_btn = ttk.Button(play_row, text="分配場景▾", command=self._open_assign_scene_menu_from_btn)
-        self._assign_btn.pack(side="left", padx=(0, 4))
         ttk.Button(play_row, text="復原", command=self.undo).pack(side="left", padx=(8, 0))
         ttk.Button(play_row, text="重做", command=self.redo).pack(side="left", padx=(4, 0))
         ttk.Separator(play_row, orient="vertical").pack(side="left", fill="y", padx=8)
