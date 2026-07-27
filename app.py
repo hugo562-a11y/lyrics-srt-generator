@@ -3999,7 +3999,7 @@ class LyricsSrtApp(tk.Tk):
         threading.Thread(target=_do, daemon=True).start()
 
     def export_xml(self) -> None:
-        """打包專案為資料夾：複製音檔＋影像＋產生動態字幕 PNG，寫入 XML（相對路徑）。"""
+        """打包為 Premiere FCP XML 資料夾：複製音檔＋影像＋產生字幕 PNG 序列。"""
         if not self.audio_path:
             messagebox.showinfo(APP_TITLE, "請先匯入音檔，才能打包專案。")
             return
@@ -4007,154 +4007,206 @@ class LyricsSrtApp(tk.Tk):
         if not dest_dir:
             return
         stem = self.audio_path.stem
-        pkg = Path(dest_dir) / f"{stem}_package"
+        pkg = Path(dest_dir) / f"{stem}_premiere"
         if pkg.exists():
             if not messagebox.askyesno(APP_TITLE, f"資料夾已存在：\n{pkg}\n\n要覆蓋嗎？"):
                 return
 
-        # 快照（讓背景執行緒安全使用）
         active_segs = [s for s in self.segments if not s.deleted and s.kind == LYRIC_KIND and s.text.strip()]
-        width, height = PNG_ASPECTS[self.png_aspect_var.get()]
-        style = self.png_animation_var.get()
-        subtitle_style = self._current_subtitle_style(target_height=height)
-        all_segs = copy.deepcopy(self.segments)
-        img_clips = list(self.image_clips)
-        ref_lyrics = list(self.reference_lyrics)
-        chars = list(self.characters)
-        storyboard = list(self.storyboard)
-        audio_path = self.audio_path
-        duration = self.duration
+        all_segs    = copy.deepcopy(self.segments)
         active_snap = copy.deepcopy(active_segs)
+        width, height    = PNG_ASPECTS[self.png_aspect_var.get()]
+        style            = self.png_animation_var.get()
+        subtitle_style   = self._current_subtitle_style(target_height=height)
+        img_clips        = list(self.image_clips)
+        audio_path       = self.audio_path
+        duration         = self.duration
 
         self._set_png_state("disabled")
-        self._set_progress_status("正在打包專案…（音檔、影像、動態字幕 PNG）", busy=True)
+        self._set_progress_status("正在打包 Premiere 素材…（音檔、影像、字幕 PNG）", busy=True)
         threading.Thread(
             target=self._run_bundle_export,
-            args=(pkg, audio_path, duration, all_segs, img_clips, ref_lyrics,
-                  chars, storyboard, active_snap, width, height, style, subtitle_style),
+            args=(pkg, audio_path, duration, all_segs, img_clips,
+                  active_snap, width, height, style, subtitle_style),
             daemon=True,
         ).start()
 
     def _run_bundle_export(self, pkg: Path, audio_path: Path, duration: float,
-                           all_segs, img_clips, ref_lyrics, chars, storyboard,
-                           active_snap, width: int, height: int, style: str, subtitle_style) -> None:
+                           all_segs, img_clips, active_snap,
+                           width: int, height: int, style: str, subtitle_style) -> None:
         import xml.etree.ElementTree as ET
         import shutil as _shutil
+
+        def _url(p: Path) -> str:
+            # file:///C:/path/to/file  (Premiere 需要正斜線)
+            return "file:///" + str(p).replace("\\", "/")
+
+        FPS = 30
+
+        def _frames(t: float) -> int:
+            return int(round(t * FPS))
+
         try:
-            audio_dir   = pkg / "audio"
-            images_dir  = pkg / "images"
-            png_dir     = pkg / f"subtitles_png_{width}x{height}_30fps"
+            audio_dir  = pkg / "audio"
+            images_dir = pkg / "images"
+            png_dir    = pkg / f"subtitles_png_{width}x{height}_{FPS}fps"
             audio_dir.mkdir(parents=True, exist_ok=True)
             images_dir.mkdir(parents=True, exist_ok=True)
 
-            # 複製音檔
-            audio_rel = ""
+            # ── 複製音檔 ──────────────────────────────────────────────────────
+            dest_audio: Path | None = None
             if audio_path and audio_path.exists():
                 dest_audio = audio_dir / audio_path.name
                 _shutil.copy2(audio_path, dest_audio)
-                audio_rel = f"audio/{audio_path.name}"
 
-            # 複製影像軌
-            img_rels: list[str] = []
+            # ── 複製影像軌 ────────────────────────────────────────────────────
+            dest_imgs: list[Path | None] = []
             for clip in img_clips:
                 src = Path(clip.image_path)
                 if src.exists():
-                    dest_img = images_dir / src.name
-                    if dest_img.exists() and dest_img.resolve() != src.resolve():
-                        dest_img = images_dir / f"{src.stem}_{id(clip)}{src.suffix}"
-                    _shutil.copy2(src, dest_img)
-                    img_rels.append(f"images/{dest_img.name}")
+                    dst = images_dir / src.name
+                    if dst.exists() and dst.resolve() != src.resolve():
+                        dst = images_dir / f"{src.stem}_{id(clip)}{src.suffix}"
+                    _shutil.copy2(src, dst)
+                    dest_imgs.append(dst)
                 else:
-                    img_rels.append(clip.image_path)
+                    dest_imgs.append(None)
 
-            # 產生動態字幕 PNG
-            png_rel = ""
+            # ── 產生字幕 PNG 序列 ─────────────────────────────────────────────
             png_frames = 0
+            first_png: Path | None = None
             if active_snap:
                 png_dir.mkdir(parents=True, exist_ok=True)
                 from subtitle_png_renderer import render_sequence
                 png_frames = render_sequence(
                     active_snap, audio_path, duration, png_dir,
-                    width, height, 30,
+                    width, height, FPS,
                     lambda text: self.events.put(("status", text)),
                     style, subtitle_style,
                 )
-                png_rel = png_dir.name
+                first_png = png_dir / "lyrics_000001.png"
 
-            # 建立 XML
-            root_el = ET.Element("MvCutProject")
+            # ── 建立 FCP 7 XML (xmeml) ────────────────────────────────────────
+            total_frames = _frames(duration)
 
-            audio_el = ET.SubElement(root_el, "audio")
-            audio_el.set("path", audio_rel)
-            audio_el.set("duration", f"{duration:.3f}")
+            xmeml = ET.Element("xmeml", version="4")
+            project = ET.SubElement(xmeml, "project")
+            ET.SubElement(project, "name").text = audio_path.stem
 
-            if png_rel:
-                ET.SubElement(root_el, "subtitlesPng").set("path", png_rel)
+            seq = ET.SubElement(project, "sequence")
+            ET.SubElement(seq, "name").text = audio_path.stem
+            ET.SubElement(seq, "duration").text = str(total_frames)
+            rate = ET.SubElement(seq, "rate")
+            ET.SubElement(rate, "timebase").text = str(FPS)
+            ET.SubElement(rate, "ntsc").text = "FALSE"
+            ET.SubElement(seq, "in").text = "-1"
+            ET.SubElement(seq, "out").text = "-1"
 
-            segs_el = ET.SubElement(root_el, "segments")
-            for i, seg in enumerate(all_segs):
-                if seg.deleted:
-                    continue
-                s = ET.SubElement(segs_el, "segment")
-                s.set("index", str(i))
-                s.set("start", f"{seg.start:.3f}")
-                s.set("end", f"{seg.end:.3f}")
-                s.set("kind", seg.kind)
-                s.text = seg.text
+            media = ET.SubElement(seq, "media")
+            video = ET.SubElement(media, "video")
 
-            imgs_el = ET.SubElement(root_el, "imageClips")
-            for clip, rel in zip(img_clips, img_rels):
-                ic = ET.SubElement(imgs_el, "clip")
-                ic.set("path", rel)
-                ic.set("start", f"{clip.start:.3f}")
-                ic.set("end", f"{clip.end:.3f}")
+            # 歌詞標記放在 sequence 上
+            lyric_segs = [s for s in all_segs if not s.deleted and s.kind == LYRIC_KIND and s.text.strip()]
+            for seg in lyric_segs:
+                mk = ET.SubElement(seq, "marker")
+                ET.SubElement(mk, "name").text = seg.text
+                ET.SubElement(mk, "in").text = str(_frames(seg.start))
+                ET.SubElement(mk, "out").text = str(_frames(seg.end))
+                ET.SubElement(mk, "comment").text = seg.text
 
-            if ref_lyrics:
-                ref_el = ET.SubElement(root_el, "referenceLyrics")
-                for line in ref_lyrics:
-                    ET.SubElement(ref_el, "line").text = line
+            # V2：字幕 PNG 序列（最上層，透明通道）
+            if first_png and first_png.exists():
+                track2 = ET.SubElement(video, "track")
+                ci = ET.SubElement(track2, "clipitem", id="subtitle_seq")
+                ET.SubElement(ci, "name").text = "動態字幕"
+                ET.SubElement(ci, "duration").text = str(total_frames)
+                r2 = ET.SubElement(ci, "rate")
+                ET.SubElement(r2, "timebase").text = str(FPS)
+                ET.SubElement(r2, "ntsc").text = "FALSE"
+                ET.SubElement(ci, "start").text = "0"
+                ET.SubElement(ci, "end").text = str(total_frames)
+                ET.SubElement(ci, "in").text = "0"
+                ET.SubElement(ci, "out").text = str(total_frames)
+                f2 = ET.SubElement(ci, "file", id="png_seq_file")
+                ET.SubElement(f2, "name").text = first_png.name
+                ET.SubElement(f2, "pathurl").text = _url(first_png)
+                r2f = ET.SubElement(f2, "rate")
+                ET.SubElement(r2f, "timebase").text = str(FPS)
+                ET.SubElement(r2f, "ntsc").text = "FALSE"
+                ET.SubElement(f2, "duration").text = str(total_frames)
+                fm2 = ET.SubElement(f2, "media")
+                fv2 = ET.SubElement(fm2, "video")
+                sc2 = ET.SubElement(fv2, "samplecharacteristics")
+                ET.SubElement(sc2, "width").text = str(width)
+                ET.SubElement(sc2, "height").text = str(height)
 
-            chars_el = ET.SubElement(root_el, "characters")
-            for ch in chars:
-                c = ET.SubElement(chars_el, "character")
-                c.set("name", ch.name)
-                c.set("gender", ch.gender)
-                c.set("age", ch.age)
-                c.set("assetType", ch.asset_type)
-                for tag, val in [
-                    ("appearance", ch.appearance), ("hair", ch.hair), ("face", ch.face),
-                    ("clothingTop", ch.clothing_top), ("clothingBottom", ch.clothing_bottom),
-                    ("accessories", ch.accessories), ("fixedDetails", ch.fixed_details),
-                    ("consistencyTerms", ch.consistency_terms),
-                ]:
-                    if val:
-                        ET.SubElement(c, tag).text = val
+            # V1：影像軌
+            if img_clips:
+                track1 = ET.SubElement(video, "track")
+                seen_img_ids: dict[str, str] = {}
+                for ci_idx, (clip, dst) in enumerate(zip(img_clips, dest_imgs)):
+                    if dst is None:
+                        continue
+                    path_key = str(dst)
+                    if path_key not in seen_img_ids:
+                        seen_img_ids[path_key] = f"img_file_{ci_idx}"
+                    file_id = seen_img_ids[path_key]
 
-            sb_el = ET.SubElement(root_el, "storyboard")
-            for i, sc in enumerate(storyboard):
-                scene_el = ET.SubElement(sb_el, "scene")
-                scene_el.set("index", str(i))
-                scene_el.set("shotType", sc.shot_type)
-                scene_el.set("style", sc.style)
-                scene_el.set("tone", sc.tone)
-                scene_el.set("location", sc.scene_location)
-                scene_el.set("time", sc.scene_time)
-                scene_el.set("weather", sc.weather)
-                scene_el.set("cameraAngle", sc.camera_angle)
-                scene_el.set("cameraMovement", sc.camera_movement)
-                if sc.event:
-                    scene_el.set("event", sc.event)
-                lyrics_el = ET.SubElement(scene_el, "lyrics")
-                for seg_idx, text in zip(sc.lyric_seg_ids, sc.lyric_texts):
-                    ly = ET.SubElement(lyrics_el, "lyric")
-                    ly.set("segIndex", str(seg_idx))
-                    ly.text = text
-                if sc.emotions:
-                    ET.SubElement(scene_el, "emotions").text = "、".join(sc.emotions)
+                    ci = ET.SubElement(track1, "clipitem", id=f"img_clip_{ci_idx}")
+                    ET.SubElement(ci, "name").text = dst.name
+                    clip_dur = _frames(clip.end - clip.start)
+                    ET.SubElement(ci, "duration").text = str(clip_dur)
+                    rc = ET.SubElement(ci, "rate")
+                    ET.SubElement(rc, "timebase").text = str(FPS)
+                    ET.SubElement(rc, "ntsc").text = "FALSE"
+                    ET.SubElement(ci, "start").text = str(_frames(clip.start))
+                    ET.SubElement(ci, "end").text = str(_frames(clip.end))
+                    ET.SubElement(ci, "in").text = "0"
+                    ET.SubElement(ci, "out").text = str(clip_dur)
 
-            tree = ET.ElementTree(root_el)
-            ET.indent(tree, space="  ")
-            tree.write(str(pkg / "project.xml"), encoding="utf-8", xml_declaration=True)
+                    # 同一檔案第二次只放 id 參照
+                    if list(seen_img_ids.values()).count(file_id) > 1:
+                        ET.SubElement(ci, "file", id=file_id)
+                    else:
+                        fi = ET.SubElement(ci, "file", id=file_id)
+                        ET.SubElement(fi, "name").text = dst.name
+                        ET.SubElement(fi, "pathurl").text = _url(dst)
+
+            # 音軌
+            audio_el = ET.SubElement(media, "audio")
+            if dest_audio and dest_audio.exists():
+                atrack = ET.SubElement(audio_el, "track")
+                aci = ET.SubElement(atrack, "clipitem", id="audio_clip")
+                ET.SubElement(aci, "name").text = dest_audio.name
+                ET.SubElement(aci, "duration").text = str(total_frames)
+                ra = ET.SubElement(aci, "rate")
+                ET.SubElement(ra, "timebase").text = str(FPS)
+                ET.SubElement(ra, "ntsc").text = "FALSE"
+                ET.SubElement(aci, "start").text = "0"
+                ET.SubElement(aci, "end").text = str(total_frames)
+                ET.SubElement(aci, "in").text = "0"
+                ET.SubElement(aci, "out").text = str(total_frames)
+                af = ET.SubElement(aci, "file", id="audio_file")
+                ET.SubElement(af, "name").text = dest_audio.name
+                ET.SubElement(af, "pathurl").text = _url(dest_audio)
+                ra2 = ET.SubElement(af, "rate")
+                ET.SubElement(ra2, "timebase").text = str(FPS)
+                ET.SubElement(ra2, "ntsc").text = "FALSE"
+                ET.SubElement(af, "duration").text = str(total_frames)
+                afm = ET.SubElement(af, "media")
+                afma = ET.SubElement(afm, "audio")
+                asc = ET.SubElement(afma, "samplecharacteristics")
+                ET.SubElement(asc, "depth").text = "16"
+                ET.SubElement(asc, "samplerate").text = "44100"
+                ET.SubElement(afma, "channelcount").text = "2"
+
+            ET.indent(xmeml, space="  ")
+            xml_path = pkg / f"{audio_path.stem}.xml"
+            tree = ET.ElementTree(xmeml)
+            with open(xml_path, "w", encoding="utf-8") as fh:
+                fh.write('<?xml version="1.0" encoding="UTF-8"?>\n')
+                fh.write('<!DOCTYPE xmeml>\n')
+                tree.write(fh, encoding="unicode", xml_declaration=False)
 
             self.events.put(("bundle_done", (pkg, png_frames, len(img_clips))))
         except Exception as exc:
