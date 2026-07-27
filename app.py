@@ -1670,9 +1670,35 @@ class LyricsSrtApp(tk.Tk):
         self._update_detail_bar()
 
     def _sb_reset_view(self) -> None:
-        self._zoom, self._pan_x, self._pan_y = 1.0, 20.0, 20.0
+        cv = self._sb_canvas
+        if cv is None:
+            return
+        if not self.storyboard and not self.characters:
+            self._zoom, self._pan_x, self._pan_y = 1.0, 20.0, 20.0
+            if hasattr(self, "_sb_zoom_label"):
+                self._sb_zoom_label.config(text="100%")
+            self._draw_storyboard_canvas()
+            return
+        xs, ys = [], []
+        for i in range(len(self.storyboard)):
+            lx, ly = self._get_scene_pos(i)
+            xs += [lx, lx + _SB_CARD_W]
+            ys += [ly, ly + _SB_CARD_H]
+        for i in range(len(self.characters)):
+            lx, ly = self._get_char_pos(i)
+            xs += [lx, lx + _SB_CHAR_CARD_W]
+            ys += [ly, ly + _SB_CHAR_CARD_H]
+        pad = 30
+        vw = max(cv.winfo_width(), 200) - pad * 2
+        vh = max(cv.winfo_height(), 200) - pad * 2
+        cw = max(max(xs) - min(xs), 1)
+        ch = max(max(ys) - min(ys), 1)
+        zoom = max(0.2, min(vw / cw, vh / ch, 2.0))
+        self._zoom = zoom
+        self._pan_x = pad - min(xs) * zoom
+        self._pan_y = pad - min(ys) * zoom
         if hasattr(self, "_sb_zoom_label"):
-            self._sb_zoom_label.config(text="100%")
+            self._sb_zoom_label.config(text=f"{int(zoom * 100)}%")
         self._draw_storyboard_canvas()
 
     def _sb_tidy_scenes(self) -> None:
