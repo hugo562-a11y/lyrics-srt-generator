@@ -3270,6 +3270,8 @@ class LyricsSrtApp(tk.Tk):
                 self.file_var.set(str(self.audio_path))
                 self.duration_var.set(f"長度：{format_timecode(self.duration)}")
                 self.play_slider.configure(to=max(0.01, self.duration))
+                self.waveform.set_audio(self.duration, None)
+                self._load_waveform_async()
             self.reference_lyrics = list(data.get("reference_lyrics", []))
             if self.reference_lyrics:
                 self.lyrics_file_var.set(f"參考歌詞已載入（{len(self.reference_lyrics)} 句）")
