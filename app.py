@@ -3055,9 +3055,12 @@ class LyricsSrtApp(tk.Tk):
 
     def add_segment(self) -> None:
         self.push_undo("新增列")
-        start = self.segments[-1].end if self.segments else 0.0
-        self.segments.append(Segment(start, min(self.duration, start + 1.0), LYRIC_KIND, "新歌詞"))
-        self.refresh_tree(); self.tree.selection_set(str(len(self.segments) - 1))
+        start = self.playback_offset
+        new_seg = Segment(start, min(self.duration, start + 1.0), LYRIC_KIND, "新歌詞")
+        idx = next((i for i, s in enumerate(self.segments) if s.start > start), len(self.segments))
+        self.segments.insert(idx, new_seg)
+        self.refresh_tree()
+        self.tree.selection_set(str(idx))
 
     def toggle_deleted(self) -> None:
         idx = self.selected_index()
