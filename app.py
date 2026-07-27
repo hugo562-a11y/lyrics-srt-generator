@@ -3986,60 +3986,134 @@ class LyricsSrtApp(tk.Tk):
         threading.Thread(target=_do, daemon=True).start()
 
     def export_xml(self) -> None:
-        """將整個專案打包成 XML 檔，方便跨工具交換。"""
+        """打包專案為資料夾：複製音檔＋影像，寫入 XML（相對路徑）。"""
         import xml.etree.ElementTree as ET
-        path = filedialog.asksaveasfilename(
-            title="打包為 XML",
-            defaultextension=".xml",
-            filetypes=[("XML 檔案", "*.xml"), ("所有檔案", "*.*")],
-        )
-        if not path:
+        import shutil as _shutil
+
+        dest_dir = filedialog.askdirectory(title="選擇打包輸出位置")
+        if not dest_dir:
             return
-        root = ET.Element("MvCutProject")
-        # 音檔
-        audio_el = ET.SubElement(root, "audio")
-        audio_el.set("path", str(self.audio_path) if self.audio_path else "")
-        audio_el.set("duration", str(self.duration))
-        # 參考歌詞
-        ref_el = ET.SubElement(root, "referenceLyrics")
-        ref_el.set("path", str(self.lyrics_path) if hasattr(self, "lyrics_path") and self.lyrics_path else "")
-        # 片段
-        segs_el = ET.SubElement(root, "segments")
+
+        # 以音檔名稱（或預設）建立打包資料夾
+        stem = self.audio_path.stem if self.audio_path else "project"
+        pkg = Path(dest_dir) / f"{stem}_package"
+        if pkg.exists():
+            if not messagebox.askyesno(APP_TITLE, f"資料夾已存在：\n{pkg}\n\n要覆蓋嗎？"):
+                return
+        audio_dir = pkg / "audio"
+        images_dir = pkg / "images"
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        images_dir.mkdir(parents=True, exist_ok=True)
+
+        # 複製音檔
+        audio_rel = ""
+        if self.audio_path and self.audio_path.exists():
+            dest_audio = audio_dir / self.audio_path.name
+            _shutil.copy2(self.audio_path, dest_audio)
+            audio_rel = f"audio/{self.audio_path.name}"
+
+        # 複製影像（同名衝突加後綴）
+        img_rels: list[str] = []
+        for clip in self.image_clips:
+            src = Path(clip.image_path)
+            if src.exists():
+                dest_img = images_dir / src.name
+                # 避免同名覆蓋
+                if dest_img.exists() and dest_img.resolve() != src.resolve():
+                    dest_img = images_dir / f"{src.stem}_{id(clip)}{src.suffix}"
+                _shutil.copy2(src, dest_img)
+                img_rels.append(f"images/{dest_img.name}")
+            else:
+                img_rels.append(clip.image_path)
+
+        # 建立 XML
+        root_el = ET.Element("MvCutProject")
+
+        audio_el = ET.SubElement(root_el, "audio")
+        audio_el.set("path", audio_rel)
+        audio_el.set("duration", f"{self.duration:.3f}")
+
+        # 時間軸片段
+        segs_el = ET.SubElement(root_el, "segments")
         for i, seg in enumerate(self.segments):
+            if seg.deleted:
+                continue
             s = ET.SubElement(segs_el, "segment")
             s.set("index", str(i))
             s.set("start", f"{seg.start:.3f}")
             s.set("end", f"{seg.end:.3f}")
             s.set("kind", seg.kind)
-            s.set("deleted", "1" if seg.deleted else "0")
             s.text = seg.text
+
+        # 影像軌
+        imgs_el = ET.SubElement(root_el, "imageClips")
+        for clip, rel in zip(self.image_clips, img_rels):
+            ic = ET.SubElement(imgs_el, "clip")
+            ic.set("path", rel)
+            ic.set("start", f"{clip.start:.3f}")
+            ic.set("end", f"{clip.end:.3f}")
+
+        # 參考歌詞（內嵌文字，不需要額外檔案）
+        if self.reference_lyrics:
+            ref_el = ET.SubElement(root_el, "referenceLyrics")
+            for line in self.reference_lyrics:
+                ln = ET.SubElement(ref_el, "line")
+                ln.text = line
+
         # 角色
-        chars_el = ET.SubElement(root, "characters")
+        chars_el = ET.SubElement(root_el, "characters")
         for ch in self.characters:
             c = ET.SubElement(chars_el, "character")
             c.set("name", ch.name)
-            c.set("description", ch.description)
+            c.set("gender", ch.gender)
+            c.set("age", ch.age)
+            c.set("assetType", ch.asset_type)
+            for tag, val in [
+                ("appearance", ch.appearance), ("hair", ch.hair), ("face", ch.face),
+                ("clothingTop", ch.clothing_top), ("clothingBottom", ch.clothing_bottom),
+                ("accessories", ch.accessories), ("fixedDetails", ch.fixed_details),
+                ("consistencyTerms", ch.consistency_terms),
+            ]:
+                if val:
+                    ET.SubElement(c, tag).text = val
+
         # 分鏡場景
-        sb_el = ET.SubElement(root, "storyboard")
+        sb_el = ET.SubElement(root_el, "storyboard")
         for i, sc in enumerate(self.storyboard):
             scene_el = ET.SubElement(sb_el, "scene")
             scene_el.set("index", str(i))
-            scene_el.set("name", sc.scene_name)
-            scene_el.set("description", sc.description)
-            scene_el.set("mood", sc.mood)
-            scene_el.set("imagePrompt", sc.image_prompt)
-            ids_el = ET.SubElement(scene_el, "lyricSegIds")
-            ids_el.text = ",".join(str(x) for x in sc.lyric_seg_ids)
-            texts_el = ET.SubElement(scene_el, "lyricTexts")
-            texts_el.text = "||".join(sc.lyric_texts)
-        # 製作設定
-        prod_el = ET.SubElement(root, "production")
-        prod_el.set("title", self.prod_settings.get("title", "") if hasattr(self, "prod_settings") else "")
-        prod_el.set("artist", self.prod_settings.get("artist", "") if hasattr(self, "prod_settings") else "")
-        tree = ET.ElementTree(root)
+            scene_el.set("shotType", sc.shot_type)
+            scene_el.set("style", sc.style)
+            scene_el.set("tone", sc.tone)
+            scene_el.set("location", sc.scene_location)
+            scene_el.set("time", sc.scene_time)
+            scene_el.set("weather", sc.weather)
+            scene_el.set("cameraAngle", sc.camera_angle)
+            scene_el.set("cameraMovement", sc.camera_movement)
+            if sc.event:
+                scene_el.set("event", sc.event)
+            # 對應字句（index + 文字）
+            lyrics_el = ET.SubElement(scene_el, "lyrics")
+            for seg_idx, text in zip(sc.lyric_seg_ids, sc.lyric_texts):
+                ly = ET.SubElement(lyrics_el, "lyric")
+                ly.set("segIndex", str(seg_idx))
+                ly.text = text
+            # 情緒標籤
+            if sc.emotions:
+                ET.SubElement(scene_el, "emotions").text = "、".join(sc.emotions)
+
+        tree = ET.ElementTree(root_el)
         ET.indent(tree, space="  ")
-        tree.write(path, encoding="utf-8", xml_declaration=True)
-        messagebox.showinfo(APP_TITLE, f"已匯出 XML：\n{path}")
+        xml_path = pkg / "project.xml"
+        tree.write(str(xml_path), encoding="utf-8", xml_declaration=True)
+
+        messagebox.showinfo(APP_TITLE,
+            f"已打包至：\n{pkg}\n\n"
+            f"音檔：{'已複製' if audio_rel else '無'}\n"
+            f"影像：{len(self.image_clips)} 個\n"
+            f"歌詞段落：{sum(1 for s in self.segments if not s.deleted)} 句\n"
+            f"分鏡場景：{len(self.storyboard)} 個"
+        )
 
 
 if __name__ == "__main__":
