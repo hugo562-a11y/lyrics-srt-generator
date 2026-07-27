@@ -4038,8 +4038,8 @@ class LyricsSrtApp(tk.Tk):
         import shutil as _shutil
 
         def _url(p: Path) -> str:
-            # file:///C:/path/to/file  (Premiere 需要正斜線)
-            return "file:///" + str(p).replace("\\", "/")
+            # Path.as_uri() 自動處理 file:/// 前綴與非 ASCII 字元的 URL 編碼
+            return p.as_uri()
 
         FPS = 30
 
@@ -4092,8 +4092,9 @@ class LyricsSrtApp(tk.Tk):
             xmeml = ET.Element("xmeml", version="4")
             project = ET.SubElement(xmeml, "project")
             ET.SubElement(project, "name").text = audio_path.stem
+            children = ET.SubElement(project, "children")
 
-            seq = ET.SubElement(project, "sequence")
+            seq = ET.SubElement(children, "sequence")
             ET.SubElement(seq, "name").text = audio_path.stem
             ET.SubElement(seq, "duration").text = str(total_frames)
             rate = ET.SubElement(seq, "rate")
@@ -4143,14 +4144,15 @@ class LyricsSrtApp(tk.Tk):
             # V1：影像軌
             if img_clips:
                 track1 = ET.SubElement(video, "track")
-                seen_img_ids: dict[str, str] = {}
+                path_to_file_id: dict[str, str] = {}
+                written_file_ids: set[str] = set()
                 for ci_idx, (clip, dst) in enumerate(zip(img_clips, dest_imgs)):
                     if dst is None:
                         continue
                     path_key = str(dst)
-                    if path_key not in seen_img_ids:
-                        seen_img_ids[path_key] = f"img_file_{ci_idx}"
-                    file_id = seen_img_ids[path_key]
+                    if path_key not in path_to_file_id:
+                        path_to_file_id[path_key] = f"img_file_{ci_idx}"
+                    file_id = path_to_file_id[path_key]
 
                     ci = ET.SubElement(track1, "clipitem", id=f"img_clip_{ci_idx}")
                     ET.SubElement(ci, "name").text = dst.name
@@ -4164,10 +4166,11 @@ class LyricsSrtApp(tk.Tk):
                     ET.SubElement(ci, "in").text = "0"
                     ET.SubElement(ci, "out").text = str(clip_dur)
 
-                    # 同一檔案第二次只放 id 參照
-                    if list(seen_img_ids.values()).count(file_id) > 1:
+                    if file_id in written_file_ids:
+                        # 同一檔案第二次只放 id 參照
                         ET.SubElement(ci, "file", id=file_id)
                     else:
+                        written_file_ids.add(file_id)
                         fi = ET.SubElement(ci, "file", id=file_id)
                         ET.SubElement(fi, "name").text = dst.name
                         ET.SubElement(fi, "pathurl").text = _url(dst)
