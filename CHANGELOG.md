@@ -1,3 +1,29 @@
+# 2026-07-28 開發進度（續二）
+
+## 新增功能
+
+### 打包為 Premiere XML（匯出選單）
+- 選擇輸出位置後，背景自動建立 `{歌名}_premiere/` 資料夾並執行：
+  - `audio/` — 複製音檔
+  - `images/` — 複製所有影像軌圖片
+  - `subtitles_png_{W}x{H}_30fps/` — 即時產生透明 RGBA 動態字幕 PNG 序列
+  - `{歌名}.xml` — **FCP 7 xmeml 格式**，Premiere 可直接 File → Import 匯入
+- XML 內容：
+  - V2 軌：字幕 PNG 序列（指向 `lyrics_000001.png`，Premiere 自動偵測序列）
+  - V1 軌：影像軌各片段（含 `start`/`end` frame、`file pathurl`）
+  - 音軌：複製後的音檔
+  - Sequence Marker：每句歌詞時間點與文字（Premiere 時間軸標記）
+- 不含分鏡、角色、參考歌詞等 Premiere 用不到的資料
+
+## 修正項目
+
+### FCP XML 無法匯入 Premiere（File Import Failure）
+- 缺少 `<project><children>` 包層：Premiere 要求 `<project><children><sequence>` 三層結構
+- 中文路徑未 URL encode：改用 `Path.as_uri()`，自動處理非 ASCII 字元
+- 影像重複 file 參照邏輯錯誤：改用 `written_file_ids` set 正確判斷是否已輸出完整 `<file>` 元素
+
+---
+
 # 2026-07-28 開發進度（續）
 
 ## 新增功能
