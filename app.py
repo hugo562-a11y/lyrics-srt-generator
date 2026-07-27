@@ -1496,6 +1496,7 @@ class LyricsSrtApp(tk.Tk):
         ttk.Button(tb, text="＋ 角色", command=self._add_character, width=7).pack(side="left", padx=(4, 0))
         ttk.Button(tb, text="場景群組", command=self._open_scene_groups_dialog, width=7).pack(side="left", padx=(4, 0))
         ttk.Button(tb, text="重置視角", command=self._sb_reset_view, width=7).pack(side="left", padx=(4, 0))
+        ttk.Button(tb, text="重新整理", command=self._sb_tidy_scenes, width=7).pack(side="left", padx=(4, 0))
         ttk.Button(tb, text="匯出 TXT", command=self._export_storyboard, width=9).pack(side="right")
         self._model_mode_var = tk.StringVar(value=self._model_mode)
         ttk.Combobox(tb, textvariable=self._model_mode_var, values=MODEL_MODE_NAMES,
@@ -1672,6 +1673,10 @@ class LyricsSrtApp(tk.Tk):
         self._zoom, self._pan_x, self._pan_y = 1.0, 20.0, 20.0
         if hasattr(self, "_sb_zoom_label"):
             self._sb_zoom_label.config(text="100%")
+        self._draw_storyboard_canvas()
+
+    def _sb_tidy_scenes(self) -> None:
+        self._scene_pos = [None] * len(self.storyboard)
         self._draw_storyboard_canvas()
 
     def _sb_press(self, event: tk.Event) -> None:
