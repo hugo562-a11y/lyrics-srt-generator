@@ -688,9 +688,15 @@ class WaveformView(ttk.Frame):
         self._drag = None
         if y <= self.RULER_H:
             self.on_seek(self._x_to_time(x))
+            self._drag = {"type": "playhead"}  # 在時間尺上可繼續拖曳移動播放頭
             return
         if y >= self.RULER_H + self.WAVE_H:
             self._press_image_track(x, y)
+            return
+        # 點擊在播放頭附近 → 拖曳播放頭
+        ph_x = self._time_to_x(self.playhead)
+        if abs(x - ph_x) <= self.EDGE_GRAB_PX:
+            self._drag = {"type": "playhead"}
             return
         handle = self._find_handle(x, y)
         if handle is not None:
@@ -746,6 +752,9 @@ class WaveformView(ttk.Frame):
         if not self._drag:
             return
         x = self.canvas.canvasx(event.x)
+        if self._drag.get("type") == "playhead":
+            self.on_seek(self._x_to_time(x))
+            return
         if self._drag.get("type") == "imgclip":
             self._drag_image_clip(x)
             return
@@ -984,6 +993,11 @@ class LyricsSrtApp(tk.Tk):
         self.bind_class("TButton", "<space>", lambda _e: None)
         self.bind_class("TCheckbutton", "<space>", lambda _e: None)
         self.bind_all("<space>", self._on_space_key)
+        _frame = 1 / 30
+        self.bind_all("<Left>",        lambda _e: self._nudge_playhead(-_frame))
+        self.bind_all("<Right>",       lambda _e: self._nudge_playhead(+_frame))
+        self.bind_all("<Shift-Left>",  lambda _e: self._nudge_playhead(-5 * _frame))
+        self.bind_all("<Shift-Right>", lambda _e: self._nudge_playhead(+5 * _frame))
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.after(120, self._poll_events)
         self.after(250, self._check_dependencies_async)
@@ -1437,6 +1451,12 @@ class LyricsSrtApp(tk.Tk):
         self.waveform.set_playhead(t)
         if self.playing:
             self._start_playback(t)
+
+    def _nudge_playhead(self, delta: float) -> None:
+        w = self.focus_get()
+        if w and w.winfo_class() in ("Entry", "Text", "TEntry", "TSpinbox"):
+            return
+        self._waveform_seek(max(0.0, min(self.duration, self.playback_offset + delta)))
 
     def _import_image_clip(self) -> None:
         path = filedialog.askopenfilename(
