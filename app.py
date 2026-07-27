@@ -110,7 +110,8 @@ class StoryboardScene:
     shot_type: str = "中景"
     style: str = "電影風"
     tone: str = "暖色"
-    lyric_texts: list = field(default_factory=list)
+    lyric_texts: list = field(default_factory=list)     # 顯示用（場景卡片/提示詞）
+    lyric_seg_ids: list = field(default_factory=list)  # 精確對應：存 segment index
     char_indices: list = field(default_factory=list)
     # ── environment ───────────────────────────────────────────────────────────
     scene_group_id: str = ""
@@ -2644,20 +2645,34 @@ class LyricsSrtApp(tk.Tk):
         values = self.tree.item(tree_item, "values")
         if not values or len(values) < 4:
             return
+        seg_idx = int(tree_item)
         text = str(values[3])
-        if text and text not in self.storyboard[scene_idx].lyric_texts:
-            self.storyboard[scene_idx].lyric_texts.append(text)
-            self._draw_storyboard_canvas()
-            self.refresh_tree()
+        scene = self.storyboard[scene_idx]
+        if seg_idx not in scene.lyric_seg_ids:
+            scene.lyric_seg_ids.append(seg_idx)
+        if text and text not in scene.lyric_texts:
+            scene.lyric_texts.append(text)
+        self._draw_storyboard_canvas()
+        self.refresh_tree()
 
     def _remove_lyric_from_scene(self, text: str, scene_idx: int) -> None:
-        if 0 <= scene_idx < len(self.storyboard):
+        if not (0 <= scene_idx < len(self.storyboard)):
+            return
+        scene = self.storyboard[scene_idx]
+        # 找出對應的 segment index（從 tree 目前選取列取得）
+        sel = self.tree.selection()
+        if sel:
+            seg_idx = int(sel[0])
             try:
-                self.storyboard[scene_idx].lyric_texts.remove(text)
-                self._draw_storyboard_canvas()
-                self.refresh_tree()
+                scene.lyric_seg_ids.remove(seg_idx)
             except ValueError:
                 pass
+        try:
+            scene.lyric_texts.remove(text)
+        except ValueError:
+            pass
+        self._draw_storyboard_canvas()
+        self.refresh_tree()
 
     def _build_setting_desc(self) -> str:
         p = self.production
@@ -3076,12 +3091,23 @@ class LyricsSrtApp(tk.Tk):
     def refresh_tree(self) -> None:
         selected = self.tree.selection()
         for item in self.tree.get_children(): self.tree.delete(item)
-        text_to_scenes: dict[str, list[int]] = {}
-        for si, sc in enumerate(self.storyboard):
-            for lt in sc.lyric_texts:
-                text_to_scenes.setdefault(lt, []).append(si + 1)
+        # 優先用 index 對應；若舊存檔無 lyric_seg_ids 則退回文字比對
+        use_idx = any(sc.lyric_seg_ids for sc in self.storyboard)
+        if use_idx:
+            seg_to_scenes: dict[int, list[int]] = {}
+            for si, sc in enumerate(self.storyboard):
+                for seg_idx in sc.lyric_seg_ids:
+                    seg_to_scenes.setdefault(seg_idx, []).append(si + 1)
+        else:
+            text_to_scenes: dict[str, list[int]] = {}
+            for si, sc in enumerate(self.storyboard):
+                for lt in sc.lyric_texts:
+                    text_to_scenes.setdefault(lt.strip(), []).append(si + 1)
         for i, segment in enumerate(self.segments):
-            scene_label = " ".join(str(n) for n in text_to_scenes.get(segment.text, []))
+            if use_idx:
+                scene_label = " ".join(str(n) for n in seg_to_scenes.get(i, []))
+            else:
+                scene_label = " ".join(str(n) for n in text_to_scenes.get(segment.text.strip(), []))
             tag = "deleted" if segment.deleted else ("music" if segment.kind == MUSIC_KIND else "lyric")
             tags = (tag, "playing") if i == self.playing_row else (tag,)
             self.tree.insert("", "end", iid=str(i), values=(format_timecode(segment.start), format_timecode(segment.end), segment.kind, segment.text, scene_label), tags=tags)
@@ -3131,7 +3157,11 @@ class LyricsSrtApp(tk.Tk):
     def _begin_edit(self, event: tk.Event) -> None:
         row = self.tree.identify_row(event.y); column = self.tree.identify_column(event.x)
         if not row or column == "#0": return
-        col = ("start", "end", "kind", "text")[int(column[1:]) - 1]
+        col_map = ("start", "end", "kind", "text", "scene")
+        col_idx = int(column[1:]) - 1
+        if col_idx >= len(col_map): return
+        col = col_map[col_idx]
+        if col == "scene": return  # 場景欄由點擊處理，雙擊不開編輯框
         bbox = self.tree.bbox(row, column)
         if not bbox: return
         x, y, width, height = bbox
@@ -3224,7 +3254,7 @@ class LyricsSrtApp(tk.Tk):
             "storyboard": [
                 {
                     "shot_type": s.shot_type, "style": s.style, "tone": s.tone,
-                    "lyrics": s.lyric_texts, "chars": s.char_indices,
+                    "lyrics": s.lyric_texts, "lyric_ids": s.lyric_seg_ids, "chars": s.char_indices,
                     "scene_group_id": s.scene_group_id,
                     "scene_location": s.scene_location, "scene_time": s.scene_time,
                     "weather": s.weather, "composition": s.composition,
@@ -3365,6 +3395,7 @@ class LyricsSrtApp(tk.Tk):
                     style=sd.get("style", "電影風"),
                     tone=sd.get("tone", "暖色"),
                     lyric_texts=list(sd.get("lyrics", [])),
+                    lyric_seg_ids=list(sd.get("lyric_ids", [])),
                     char_indices=list(sd.get("chars", [])),
                     scene_group_id=sd.get("scene_group_id", ""),
                     scene_location=sd.get("scene_location", "（無）"),
