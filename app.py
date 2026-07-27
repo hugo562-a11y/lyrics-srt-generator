@@ -3150,9 +3150,19 @@ class LyricsSrtApp(tk.Tk):
     def toggle_deleted(self) -> None:
         idx = self.selected_index()
         if idx is None: return
-        self.push_undo("刪除／還原")
-        self.segments[idx].deleted = not self.segments[idx].deleted
-        self.refresh_tree(); self.tree.selection_set(str(idx))
+        self.push_undo("刪除句子")
+        self.segments.pop(idx)
+        # 同步移除場景中對應的 lyric_seg_id，並將 > idx 的 index 往前移
+        for sc in self.storyboard:
+            sc.lyric_seg_ids = [
+                (i if i < idx else i - 1)
+                for i in sc.lyric_seg_ids if i != idx
+            ]
+        self.refresh_tree()
+        # 選取刪除後的同位置句子（或往前一句）
+        new_sel = min(idx, len(self.segments) - 1)
+        if new_sel >= 0:
+            self.tree.selection_set(str(new_sel))
 
     def _begin_edit(self, event: tk.Event) -> None:
         row = self.tree.identify_row(event.y); column = self.tree.identify_column(event.x)
