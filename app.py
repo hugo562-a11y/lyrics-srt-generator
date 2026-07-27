@@ -2626,51 +2626,51 @@ class LyricsSrtApp(tk.Tk):
         values = self.tree.item(item, "values")
         if not values or len(values) < 4:
             return
+        seg_idx = int(item)
         text = str(values[3])
+        # 找出目前所在場景（優先 index，退回文字比對）
+        cur = next((i for i, sc in enumerate(self.storyboard) if seg_idx in sc.lyric_seg_ids), None)
+        if cur is None:
+            cur = next((i for i, sc in enumerate(self.storyboard) if text in sc.lyric_texts), None)
         menu = tk.Menu(self, tearoff=0)
         if not self.storyboard:
             menu.add_command(label="先新增場景（分鏡表）再指定", state="disabled")
         else:
             for i, scene in enumerate(self.storyboard):
-                already = text in scene.lyric_texts
+                is_cur = (i == cur)
                 preview = ("、".join(scene.lyric_texts[:2]) + "…") if scene.lyric_texts else "（空）"
-                label = f"{'✓ ' if already else ''}場景 {i + 1}  {preview}"
-                if already:
-                    menu.add_command(label=label, command=lambda idx=i, t=text: self._remove_lyric_from_scene(t, idx))
+                label = f"{'✓ ' if is_cur else ''}場景 {i + 1}  {preview}"
+                if is_cur:
+                    menu.add_command(label=label, command=lambda idx=i, t=text, si=seg_idx: self._unassign_lyric(t, si, idx))
                 else:
-                    menu.add_command(label=label, command=lambda iid=item, idx=i: self._assign_lyric_to_scene(iid, idx))
+                    menu.add_command(label=label, command=lambda idx=i, t=text, si=seg_idx, old=cur: self._move_lyric_to_scene(t, si, old, idx))
         menu.tk_popup(x_root, y_root)
 
-    def _assign_lyric_to_scene(self, tree_item: str, scene_idx: int) -> None:
-        values = self.tree.item(tree_item, "values")
-        if not values or len(values) < 4:
-            return
-        seg_idx = int(tree_item)
-        text = str(values[3])
-        scene = self.storyboard[scene_idx]
-        if seg_idx not in scene.lyric_seg_ids:
-            scene.lyric_seg_ids.append(seg_idx)
-        if text and text not in scene.lyric_texts:
-            scene.lyric_texts.append(text)
+    def _move_lyric_to_scene(self, text: str, seg_idx: int, old_scene_idx, new_scene_idx: int) -> None:
+        # 先從舊場景移除
+        if old_scene_idx is not None and 0 <= old_scene_idx < len(self.storyboard):
+            old = self.storyboard[old_scene_idx]
+            try: old.lyric_seg_ids.remove(seg_idx)
+            except ValueError: pass
+            try: old.lyric_texts.remove(text)
+            except ValueError: pass
+        # 加入新場景
+        new = self.storyboard[new_scene_idx]
+        if seg_idx not in new.lyric_seg_ids:
+            new.lyric_seg_ids.append(seg_idx)
+        if text and text not in new.lyric_texts:
+            new.lyric_texts.append(text)
         self._draw_storyboard_canvas()
         self.refresh_tree()
 
-    def _remove_lyric_from_scene(self, text: str, scene_idx: int) -> None:
+    def _unassign_lyric(self, text: str, seg_idx: int, scene_idx: int) -> None:
         if not (0 <= scene_idx < len(self.storyboard)):
             return
-        scene = self.storyboard[scene_idx]
-        # 找出對應的 segment index（從 tree 目前選取列取得）
-        sel = self.tree.selection()
-        if sel:
-            seg_idx = int(sel[0])
-            try:
-                scene.lyric_seg_ids.remove(seg_idx)
-            except ValueError:
-                pass
-        try:
-            scene.lyric_texts.remove(text)
-        except ValueError:
-            pass
+        sc = self.storyboard[scene_idx]
+        try: sc.lyric_seg_ids.remove(seg_idx)
+        except ValueError: pass
+        try: sc.lyric_texts.remove(text)
+        except ValueError: pass
         self._draw_storyboard_canvas()
         self.refresh_tree()
 
