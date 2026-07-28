@@ -515,14 +515,24 @@ class WaveformView(ttk.Frame):
             self.pixels_per_second = max(self.MIN_PPS, min(self.MAX_PPS, width / self.duration))
         self._redraw()
 
+    _PH_TW = 8  # 三角形半寬
+
     def set_playhead(self, t: float, follow: bool = False) -> None:
         self.playhead = max(0.0, min(self.duration, t))
         x = self._time_to_x(self.playhead)
         total_h = self.RULER_H + self.WAVE_H + self.IMAGE_TRACK_H
+        TW = self._PH_TW
         if self.canvas.find_withtag("playhead"):
             self.canvas.coords("playhead", x, 0, x, total_h)
         else:
             self.canvas.create_line(x, 0, x, total_h, fill=PLAYHEAD_COLOR, width=2, tags=("playhead",))
+        if self.canvas.find_withtag("playhead_tri"):
+            self.canvas.coords("playhead_tri", x - TW, 0, x + TW, 0, x, TW * 1.4)
+        else:
+            self.canvas.create_polygon(
+                x - TW, 0, x + TW, 0, x, TW * 1.4,
+                fill=PLAYHEAD_COLOR, outline="#ffffff", width=1, tags=("playhead_tri",),
+            )
         if follow:
             self.reveal_time(self.playhead)
 
@@ -574,7 +584,7 @@ class WaveformView(ttk.Frame):
         TW = 8
         self.canvas.create_polygon(
             ph_x - TW, 0, ph_x + TW, 0, ph_x, TW * 1.4,
-            fill=PLAYHEAD_COLOR, outline="#ffffff", width=1, tags=("playhead", "playhead_tri"),
+            fill=PLAYHEAD_COLOR, outline="#ffffff", width=1, tags=("playhead_tri",),
         )
 
     def _draw_ruler(self, width: int, height: int) -> None:
@@ -3185,11 +3195,13 @@ class LyricsSrtApp(tk.Tk):
                     self._set_progress_status("影像生成失敗", busy=False)
                     messagebox.showerror(APP_TITLE, f"影像生成失敗：\n{payload}")
                 elif event == "bundle_done":
-                    pkg, img_count = payload
+                    pkg, img_count, sub_count = payload
                     self._set_progress_status(f"已打包至：{pkg}", busy=False)
+                    sub_note = f"字幕 PNG：{sub_count} 句（V2 軌）\n" if sub_count else "（無字幕句）\n"
                     messagebox.showinfo(APP_TITLE,
                         f"打包完成！\n\n{pkg}\n\n"
-                        f"影像：{img_count} 個\n\n"
+                        f"影像：{img_count} 個（V1 軌）\n"
+                        f"{sub_note}\n"
                         f"Premiere → File → Import → 選 XML 檔"
                     )
                 elif event == "bundle_error":
@@ -4065,16 +4077,27 @@ class LyricsSrtApp(tk.Tk):
         img_clips = list(self.image_clips)
         audio_path = self.audio_path
         duration   = self.duration
+        png_w, png_h = PNG_ASPECTS.get(self.png_aspect_var.get(), (1920, 1080))
+        font_path    = self.font_paths.get(self.subtitle_font_name_var.get(), "")
+        font_size    = self.subtitle_font_size_var.get()
+        text_color   = self.subtitle_text_color
+        outline_color = self.subtitle_outline_color
+        valign       = self.subtitle_valign_var.get()
 
-        self._set_progress_status("正在打包 Premiere 素材…（音檔、影像）", busy=True)
+        self._set_progress_status("正在打包 Premiere 素材…（音檔、影像、字幕）", busy=True)
         threading.Thread(
             target=self._run_bundle_export,
-            args=(pkg, audio_path, duration, all_segs, img_clips),
+            args=(pkg, audio_path, duration, all_segs, img_clips,
+                  png_w, png_h, font_path, font_size, text_color, outline_color, valign),
             daemon=True,
         ).start()
 
     def _run_bundle_export(self, pkg: Path, audio_path: Path, duration: float,
-                           all_segs, img_clips) -> None:
+                           all_segs, img_clips,
+                           png_w: int = 1920, png_h: int = 1080,
+                           font_path: str = "", font_size: int = 64,
+                           text_color: str = "#f6f7f4", outline_color: str = "#100c09",
+                           valign: str = "下方") -> None:
         import xml.etree.ElementTree as ET
         import shutil as _shutil
 
@@ -4085,6 +4108,23 @@ class LyricsSrtApp(tk.Tk):
 
         def _frames(t: float) -> int:
             return int(round(t * FPS))
+
+        def _rate_el(parent, timebase: int) -> None:
+            r = ET.SubElement(parent, "rate")
+            ET.SubElement(r, "timebase").text = str(timebase)
+            ET.SubElement(r, "ntsc").text = "FALSE"
+
+        def _img_size(p: Path):
+            try:
+                from PIL import Image as _PIL
+                with _PIL.open(p) as im:
+                    return im.width, im.height
+            except Exception:
+                return png_w, png_h
+
+        def _hex_rgb(h: str):
+            h = h.lstrip("#")
+            return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
 
         try:
             audio_dir  = pkg / "audio"
@@ -4111,6 +4151,57 @@ class LyricsSrtApp(tk.Tk):
                 else:
                     dest_imgs.append(None)
 
+            # ── 產生字幕 PNG（每句一張）──────────────────────────────────────
+            lyric_segs = [s for s in all_segs if not s.deleted and s.kind == LYRIC_KIND and s.text.strip()]
+            subtitle_clips: list[tuple] = []
+            try:
+                from PIL import Image as _PILI, ImageDraw as _PILD, ImageFont as _PILF
+                sub_dir = pkg / "subtitles"
+                sub_dir.mkdir(exist_ok=True)
+                tc_rgb = _hex_rgb(text_color)
+                oc_rgb = _hex_rgb(outline_color)
+                pil_font = None
+                for fp in [font_path] + [
+                    "C:/Windows/Fonts/msjh.ttc",
+                    "C:/Windows/Fonts/msyh.ttc",
+                    "C:/Windows/Fonts/arial.ttf",
+                    "C:/Windows/Fonts/calibri.ttf",
+                ]:
+                    if not fp:
+                        continue
+                    try:
+                        pil_font = _PILF.truetype(fp, font_size)
+                        break
+                    except Exception:
+                        pass
+                if pil_font is None:
+                    try:
+                        pil_font = _PILF.load_default(size=font_size)
+                    except TypeError:
+                        pil_font = _PILF.load_default()
+                margin = max(20, png_h // 12)
+                for sub_idx, seg in enumerate(lyric_segs):
+                    img = _PILI.new("RGBA", (png_w, png_h), (0, 0, 0, 0))
+                    draw = _PILD.Draw(img)
+                    text = seg.text
+                    bbox = draw.textbbox((0, 0), text, font=pil_font)
+                    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+                    x = (png_w - tw) // 2
+                    if valign == "上方":
+                        y = margin
+                    elif valign == "中間":
+                        y = (png_h - th) // 2
+                    else:
+                        y = png_h - th - margin
+                    for dx, dy in [(-2,-2),(-2,0),(-2,2),(0,-2),(0,2),(2,-2),(2,0),(2,2)]:
+                        draw.text((x+dx, y+dy), text, font=pil_font, fill=(*oc_rgb, 255))
+                    draw.text((x, y), text, font=pil_font, fill=(*tc_rgb, 255))
+                    out_path = sub_dir / f"sub_{sub_idx:04d}.png"
+                    img.save(out_path, "PNG")
+                    subtitle_clips.append((seg, out_path))
+            except Exception:
+                subtitle_clips = []
+
             # ── 建立 FCP 7 XML (xmeml) ────────────────────────────────────────
             total_frames = _frames(duration)
 
@@ -4122,26 +4213,35 @@ class LyricsSrtApp(tk.Tk):
             seq = ET.SubElement(children, "sequence")
             ET.SubElement(seq, "name").text = audio_path.stem
             ET.SubElement(seq, "duration").text = str(total_frames)
-            rate = ET.SubElement(seq, "rate")
-            ET.SubElement(rate, "timebase").text = str(FPS)
-            ET.SubElement(rate, "ntsc").text = "FALSE"
+            _rate_el(seq, FPS)
             ET.SubElement(seq, "in").text = "-1"
             ET.SubElement(seq, "out").text = "-1"
 
+            tc_el = ET.SubElement(seq, "timecode")
+            _rate_el(tc_el, FPS)
+            ET.SubElement(tc_el, "string").text = "00:00:00:00"
+            ET.SubElement(tc_el, "frame").text = "0"
+            ET.SubElement(tc_el, "displayformat").text = "NDF"
+
             media = ET.SubElement(seq, "media")
+
+            # ── 視訊軌 ────────────────────────────────────────────────────────
             video = ET.SubElement(media, "video")
 
-            # 歌詞標記放在 sequence 上
-            lyric_segs = [s for s in all_segs if not s.deleted and s.kind == LYRIC_KIND and s.text.strip()]
-            for seg in lyric_segs:
-                mk = ET.SubElement(seq, "marker")
-                ET.SubElement(mk, "name").text = seg.text
-                ET.SubElement(mk, "in").text = str(_frames(seg.start))
-                ET.SubElement(mk, "out").text = str(_frames(seg.end))
-                ET.SubElement(mk, "comment").text = seg.text
+            vfmt = ET.SubElement(video, "format")
+            vsc = ET.SubElement(vfmt, "samplecharacteristics")
+            _rate_el(vsc, FPS)
+            ET.SubElement(vsc, "width").text = str(png_w)
+            ET.SubElement(vsc, "height").text = str(png_h)
+            ET.SubElement(vsc, "pixelaspectratio").text = "square"
+            ET.SubElement(vsc, "fielddominance").text = "none"
 
-            # V1：影像軌（先加＝最下層）
-            valid_img_pairs = [(i, clip, dst) for i, (clip, dst) in enumerate(zip(img_clips, dest_imgs)) if dst is not None]
+            # V1：影像軌
+            valid_img_pairs = [
+                (i, clip, dst)
+                for i, (clip, dst) in enumerate(zip(img_clips, dest_imgs))
+                if dst is not None
+            ]
             if valid_img_pairs:
                 track1 = ET.SubElement(video, "track")
                 ET.SubElement(track1, "enabled").text = "TRUE"
@@ -4156,11 +4256,9 @@ class LyricsSrtApp(tk.Tk):
 
                     ci = ET.SubElement(track1, "clipitem", id=f"img_clip_{ci_idx}")
                     ET.SubElement(ci, "name").text = dst.name
-                    clip_dur = _frames(clip.end - clip.start)
+                    clip_dur = max(1, _frames(clip.end - clip.start))
                     ET.SubElement(ci, "duration").text = str(clip_dur)
-                    rc = ET.SubElement(ci, "rate")
-                    ET.SubElement(rc, "timebase").text = str(FPS)
-                    ET.SubElement(rc, "ntsc").text = "FALSE"
+                    _rate_el(ci, FPS)
                     ET.SubElement(ci, "start").text = str(_frames(clip.start))
                     ET.SubElement(ci, "end").text = str(_frames(clip.end))
                     ET.SubElement(ci, "in").text = "0"
@@ -4171,37 +4269,93 @@ class LyricsSrtApp(tk.Tk):
                         ET.SubElement(ci, "file", id=file_id)
                     else:
                         written_file_ids.add(file_id)
+                        iw, ih = _img_size(dst)
                         fi = ET.SubElement(ci, "file", id=file_id)
                         ET.SubElement(fi, "name").text = dst.name
                         ET.SubElement(fi, "pathurl").text = _url(dst)
+                        _rate_el(fi, FPS)
+                        ET.SubElement(fi, "duration").text = str(clip_dur)
+                        fimed = ET.SubElement(fi, "media")
+                        fivid = ET.SubElement(fimed, "video")
+                        fisc = ET.SubElement(fivid, "samplecharacteristics")
+                        ET.SubElement(fisc, "width").text = str(iw)
+                        ET.SubElement(fisc, "height").text = str(ih)
 
-            # 音軌
+            # V2：字幕 PNG 軌（每句歌詞一張靜態透明 PNG）
+            if subtitle_clips:
+                track2 = ET.SubElement(video, "track")
+                ET.SubElement(track2, "enabled").text = "TRUE"
+                ET.SubElement(track2, "locked").text = "FALSE"
+                for sub_idx, (seg, sub_png) in enumerate(subtitle_clips):
+                    clip_dur = max(1, _frames(seg.end - seg.start))
+                    sci = ET.SubElement(track2, "clipitem", id=f"sub_clip_{sub_idx}")
+                    ET.SubElement(sci, "name").text = seg.text[:30]
+                    ET.SubElement(sci, "duration").text = str(clip_dur)
+                    _rate_el(sci, FPS)
+                    ET.SubElement(sci, "start").text = str(_frames(seg.start))
+                    ET.SubElement(sci, "end").text = str(_frames(seg.end))
+                    ET.SubElement(sci, "in").text = "0"
+                    ET.SubElement(sci, "out").text = str(clip_dur)
+                    ET.SubElement(sci, "enabled").text = "TRUE"
+                    sfi = ET.SubElement(sci, "file", id=f"sub_file_{sub_idx}")
+                    ET.SubElement(sfi, "name").text = sub_png.name
+                    ET.SubElement(sfi, "pathurl").text = _url(sub_png)
+                    _rate_el(sfi, FPS)
+                    ET.SubElement(sfi, "duration").text = str(clip_dur)
+                    sfm = ET.SubElement(sfi, "media")
+                    sfv = ET.SubElement(sfm, "video")
+                    sfsc = ET.SubElement(sfv, "samplecharacteristics")
+                    ET.SubElement(sfsc, "width").text = str(png_w)
+                    ET.SubElement(sfsc, "height").text = str(png_h)
+
+            # ── 音軌 ──────────────────────────────────────────────────────────
             audio_el = ET.SubElement(media, "audio")
+            ET.SubElement(audio_el, "numOutputChannels").text = "2"
+            afmt = ET.SubElement(audio_el, "format")
+            afmtsc = ET.SubElement(afmt, "samplecharacteristics")
+            ET.SubElement(afmtsc, "depth").text = "16"
+            ET.SubElement(afmtsc, "samplerate").text = "44100"
+
             if dest_audio and dest_audio.exists():
-                atrack = ET.SubElement(audio_el, "track")
-                aci = ET.SubElement(atrack, "clipitem", id="audio_clip")
-                ET.SubElement(aci, "name").text = dest_audio.name
-                ET.SubElement(aci, "duration").text = str(total_frames)
-                ra = ET.SubElement(aci, "rate")
-                ET.SubElement(ra, "timebase").text = str(FPS)
-                ET.SubElement(ra, "ntsc").text = "FALSE"
-                ET.SubElement(aci, "start").text = "0"
-                ET.SubElement(aci, "end").text = str(total_frames)
-                ET.SubElement(aci, "in").text = "0"
-                ET.SubElement(aci, "out").text = str(total_frames)
-                af = ET.SubElement(aci, "file", id="audio_file")
-                ET.SubElement(af, "name").text = dest_audio.name
-                ET.SubElement(af, "pathurl").text = _url(dest_audio)
-                ra2 = ET.SubElement(af, "rate")
-                ET.SubElement(ra2, "timebase").text = str(FPS)
-                ET.SubElement(ra2, "ntsc").text = "FALSE"
-                ET.SubElement(af, "duration").text = str(total_frames)
-                afm = ET.SubElement(af, "media")
-                afma = ET.SubElement(afm, "audio")
-                asc = ET.SubElement(afma, "samplecharacteristics")
-                ET.SubElement(asc, "depth").text = "16"
-                ET.SubElement(asc, "samplerate").text = "44100"
-                ET.SubElement(afma, "channelcount").text = "2"
+                def _audio_clipitem(track_el, clip_id: str, ch_idx: int, full_file: bool) -> None:
+                    aci = ET.SubElement(track_el, "clipitem", id=clip_id)
+                    ET.SubElement(aci, "name").text = dest_audio.name
+                    ET.SubElement(aci, "duration").text = str(total_frames)
+                    _rate_el(aci, FPS)
+                    ET.SubElement(aci, "start").text = "0"
+                    ET.SubElement(aci, "end").text = str(total_frames)
+                    ET.SubElement(aci, "in").text = "0"
+                    ET.SubElement(aci, "out").text = str(total_frames)
+                    ET.SubElement(aci, "enabled").text = "TRUE"
+                    src = ET.SubElement(aci, "sourcetrack")
+                    ET.SubElement(src, "mediatype").text = "audio"
+                    ET.SubElement(src, "trackindex").text = str(ch_idx)
+                    if full_file:
+                        af = ET.SubElement(aci, "file", id="audio_file")
+                        ET.SubElement(af, "name").text = dest_audio.name
+                        ET.SubElement(af, "pathurl").text = _url(dest_audio)
+                        # 不放 <rate> / <duration>：讓 Premiere 自行讀 MP3 格式
+                        afm = ET.SubElement(af, "media")
+                        afma = ET.SubElement(afm, "audio")
+                        asc = ET.SubElement(afma, "samplecharacteristics")
+                        ET.SubElement(asc, "depth").text = "16"
+                        ET.SubElement(asc, "samplerate").text = "44100"
+                        ET.SubElement(afma, "channelcount").text = "2"
+                    else:
+                        ET.SubElement(aci, "file", id="audio_file")  # 參照同一檔案
+
+                atrack1 = ET.SubElement(audio_el, "track")
+                _audio_clipitem(atrack1, "audio_clip_L", 1, full_file=True)
+                atrack2 = ET.SubElement(audio_el, "track")
+                _audio_clipitem(atrack2, "audio_clip_R", 2, full_file=False)
+
+            # ── 歌詞標記（sequence markers）──────────────────────────────────
+            for seg in lyric_segs:
+                mk = ET.SubElement(seq, "marker")
+                ET.SubElement(mk, "name").text = seg.text
+                ET.SubElement(mk, "in").text = str(_frames(seg.start))
+                ET.SubElement(mk, "out").text = str(_frames(seg.end))
+                ET.SubElement(mk, "comment").text = seg.text
 
             ET.indent(xmeml, space="  ")
             xml_path = pkg / f"{audio_path.stem}.xml"
@@ -4211,7 +4365,7 @@ class LyricsSrtApp(tk.Tk):
                 fh.write('<!DOCTYPE xmeml>\n')
                 tree.write(fh, encoding="unicode", xml_declaration=False)
 
-            self.events.put(("bundle_done", (pkg, len(img_clips))))
+            self.events.put(("bundle_done", (pkg, len(img_clips), len(subtitle_clips))))
         except Exception as exc:
             self.events.put(("bundle_error", str(exc)))
 
