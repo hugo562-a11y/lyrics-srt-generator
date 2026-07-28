@@ -4115,40 +4115,15 @@ class LyricsSrtApp(tk.Tk):
                 ET.SubElement(mk, "out").text = str(_frames(seg.end))
                 ET.SubElement(mk, "comment").text = seg.text
 
-            # V2：字幕 PNG 序列（最上層，透明通道）
-            if first_png and first_png.exists():
-                track2 = ET.SubElement(video, "track")
-                ci = ET.SubElement(track2, "clipitem", id="subtitle_seq")
-                ET.SubElement(ci, "name").text = "動態字幕"
-                ET.SubElement(ci, "duration").text = str(total_frames)
-                r2 = ET.SubElement(ci, "rate")
-                ET.SubElement(r2, "timebase").text = str(FPS)
-                ET.SubElement(r2, "ntsc").text = "FALSE"
-                ET.SubElement(ci, "start").text = "0"
-                ET.SubElement(ci, "end").text = str(total_frames)
-                ET.SubElement(ci, "in").text = "0"
-                ET.SubElement(ci, "out").text = str(total_frames)
-                f2 = ET.SubElement(ci, "file", id="png_seq_file")
-                ET.SubElement(f2, "name").text = first_png.name
-                ET.SubElement(f2, "pathurl").text = _url(first_png)
-                r2f = ET.SubElement(f2, "rate")
-                ET.SubElement(r2f, "timebase").text = str(FPS)
-                ET.SubElement(r2f, "ntsc").text = "FALSE"
-                ET.SubElement(f2, "duration").text = str(total_frames)
-                fm2 = ET.SubElement(f2, "media")
-                fv2 = ET.SubElement(fm2, "video")
-                sc2 = ET.SubElement(fv2, "samplecharacteristics")
-                ET.SubElement(sc2, "width").text = str(width)
-                ET.SubElement(sc2, "height").text = str(height)
-
-            # V1：影像軌
-            if img_clips:
+            # V1：影像軌（先加＝最下層）
+            valid_img_pairs = [(i, clip, dst) for i, (clip, dst) in enumerate(zip(img_clips, dest_imgs)) if dst is not None]
+            if valid_img_pairs:
                 track1 = ET.SubElement(video, "track")
+                ET.SubElement(track1, "enabled").text = "TRUE"
+                ET.SubElement(track1, "locked").text = "FALSE"
                 path_to_file_id: dict[str, str] = {}
                 written_file_ids: set[str] = set()
-                for ci_idx, (clip, dst) in enumerate(zip(img_clips, dest_imgs)):
-                    if dst is None:
-                        continue
+                for ci_idx, clip, dst in valid_img_pairs:
                     path_key = str(dst)
                     if path_key not in path_to_file_id:
                         path_to_file_id[path_key] = f"img_file_{ci_idx}"
@@ -4165,15 +4140,44 @@ class LyricsSrtApp(tk.Tk):
                     ET.SubElement(ci, "end").text = str(_frames(clip.end))
                     ET.SubElement(ci, "in").text = "0"
                     ET.SubElement(ci, "out").text = str(clip_dur)
+                    ET.SubElement(ci, "enabled").text = "TRUE"
 
                     if file_id in written_file_ids:
-                        # 同一檔案第二次只放 id 參照
                         ET.SubElement(ci, "file", id=file_id)
                     else:
                         written_file_ids.add(file_id)
                         fi = ET.SubElement(ci, "file", id=file_id)
                         ET.SubElement(fi, "name").text = dst.name
                         ET.SubElement(fi, "pathurl").text = _url(dst)
+
+            # V2：字幕 PNG 序列（後加＝最上層，透明通道疊在影像上）
+            if first_png and first_png.exists():
+                track2 = ET.SubElement(video, "track")
+                ET.SubElement(track2, "enabled").text = "TRUE"
+                ET.SubElement(track2, "locked").text = "FALSE"
+                ci = ET.SubElement(track2, "clipitem", id="subtitle_seq")
+                ET.SubElement(ci, "name").text = "動態字幕"
+                ET.SubElement(ci, "duration").text = str(total_frames)
+                r2 = ET.SubElement(ci, "rate")
+                ET.SubElement(r2, "timebase").text = str(FPS)
+                ET.SubElement(r2, "ntsc").text = "FALSE"
+                ET.SubElement(ci, "start").text = "0"
+                ET.SubElement(ci, "end").text = str(total_frames)
+                ET.SubElement(ci, "in").text = "0"
+                ET.SubElement(ci, "out").text = str(total_frames)
+                ET.SubElement(ci, "enabled").text = "TRUE"
+                f2 = ET.SubElement(ci, "file", id="png_seq_file")
+                ET.SubElement(f2, "name").text = first_png.name
+                ET.SubElement(f2, "pathurl").text = _url(first_png)
+                r2f = ET.SubElement(f2, "rate")
+                ET.SubElement(r2f, "timebase").text = str(FPS)
+                ET.SubElement(r2f, "ntsc").text = "FALSE"
+                ET.SubElement(f2, "duration").text = str(total_frames)
+                fm2 = ET.SubElement(f2, "media")
+                fv2 = ET.SubElement(fm2, "video")
+                sc2 = ET.SubElement(fv2, "samplecharacteristics")
+                ET.SubElement(sc2, "width").text = str(width)
+                ET.SubElement(sc2, "height").text = str(height)
 
             # 音軌
             audio_el = ET.SubElement(media, "audio")
