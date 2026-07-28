@@ -3148,13 +3148,13 @@ class LyricsSrtApp(tk.Tk):
                     self._set_png_state("normal")
                     self._set_progress_status(f"已打包至：{pkg}", busy=False)
                     png_note = (
-                        f"\n\n動態字幕 PNG（{png_frames:,} 張）已放在 subtitles_png_* 資料夾\n"
-                        "→ Premiere：File → Import → 選該資料夾第一張 → 勾選 Image Sequence"
+                        f"\n\n動態字幕（{png_frames:,} 張）：XML 已含路徑\n"
+                        "→ Premiere 匯入後對字幕軌右鍵 Link Media → 勾 Image Sequence → 選第一張 PNG"
                     ) if png_frames else ""
                     messagebox.showinfo(APP_TITLE,
                         f"打包完成！\n\n{pkg}\n\n"
-                        f"XML（音檔＋影像軌）：直接 File → Import\n"
-                        f"影像軌：{img_count} 個"
+                        f"音檔＋影像軌：XML 直接 File → Import\n"
+                        f"影像：{img_count} 個"
                         f"{png_note}"
                     )
                 elif event == "bundle_error":
@@ -4153,8 +4153,35 @@ class LyricsSrtApp(tk.Tk):
                         ET.SubElement(fi, "name").text = dst.name
                         ET.SubElement(fi, "pathurl").text = _url(dst)
 
-            # 字幕 PNG 序列不放入 XML（Premiere 無法從 FCP XML 自動辨識序列）
-            # 使用者需在 Premiere 手動 File → Import → 選 PNG 資料夾 → 勾選「Image Sequence」
+            # V2：字幕 PNG 序列（XML 保留路徑，Premiere 匯入後用 Link Media 接序列）
+            first_png = png_dir / "lyrics_000001.png"
+            if png_frames > 0 and first_png.exists():
+                track2 = ET.SubElement(video, "track")
+                ET.SubElement(track2, "enabled").text = "TRUE"
+                ET.SubElement(track2, "locked").text = "FALSE"
+                ci = ET.SubElement(track2, "clipitem", id="subtitle_seq")
+                ET.SubElement(ci, "name").text = "動態字幕"
+                ET.SubElement(ci, "duration").text = str(total_frames)
+                r2 = ET.SubElement(ci, "rate")
+                ET.SubElement(r2, "timebase").text = str(FPS)
+                ET.SubElement(r2, "ntsc").text = "FALSE"
+                ET.SubElement(ci, "start").text = "0"
+                ET.SubElement(ci, "end").text = str(total_frames)
+                ET.SubElement(ci, "in").text = "0"
+                ET.SubElement(ci, "out").text = str(total_frames)
+                ET.SubElement(ci, "enabled").text = "TRUE"
+                f2 = ET.SubElement(ci, "file", id="subtitle_png_file")
+                ET.SubElement(f2, "name").text = first_png.name
+                ET.SubElement(f2, "pathurl").text = _url(first_png)
+                r2f = ET.SubElement(f2, "rate")
+                ET.SubElement(r2f, "timebase").text = str(FPS)
+                ET.SubElement(r2f, "ntsc").text = "FALSE"
+                ET.SubElement(f2, "duration").text = str(total_frames)
+                fm2 = ET.SubElement(f2, "media")
+                fv2 = ET.SubElement(fm2, "video")
+                sc2 = ET.SubElement(fv2, "samplecharacteristics")
+                ET.SubElement(sc2, "width").text = str(width)
+                ET.SubElement(sc2, "height").text = str(height)
 
             # 音軌
             audio_el = ET.SubElement(media, "audio")
