@@ -3144,18 +3144,12 @@ class LyricsSrtApp(tk.Tk):
                     self._set_progress_status("影像生成失敗", busy=False)
                     messagebox.showerror(APP_TITLE, f"影像生成失敗：\n{payload}")
                 elif event == "bundle_done":
-                    pkg, png_frames, img_count = payload
-                    self._set_png_state("normal")
+                    pkg, img_count = payload
                     self._set_progress_status(f"已打包至：{pkg}", busy=False)
-                    png_note = (
-                        f"\n\n動態字幕（{png_frames:,} 張）：XML 已含路徑\n"
-                        "→ Premiere 匯入後對字幕軌右鍵 Link Media → 勾 Image Sequence → 選第一張 PNG"
-                    ) if png_frames else ""
                     messagebox.showinfo(APP_TITLE,
                         f"打包完成！\n\n{pkg}\n\n"
-                        f"音檔＋影像軌：XML 直接 File → Import\n"
-                        f"影像：{img_count} 個"
-                        f"{png_note}"
+                        f"影像：{img_count} 個\n\n"
+                        f"Premiere → File → Import → 選 XML 檔"
                     )
                 elif event == "bundle_error":
                     self._set_png_state("normal")
@@ -4004,9 +3998,18 @@ class LyricsSrtApp(tk.Tk):
         threading.Thread(target=_do, daemon=True).start()
 
     def export_xml(self) -> None:
-        """打包為 Premiere FCP XML 資料夾：複製音檔＋影像＋產生字幕 PNG 序列。"""
+        """打包為 Premiere FCP XML 資料夾：複製音檔＋影像，寫入 XML。"""
         if not self.audio_path:
             messagebox.showinfo(APP_TITLE, "請先匯入音檔，才能打包專案。")
+            return
+        img_count = len([c for c in self.image_clips if Path(c.image_path).exists()])
+        lyric_count = sum(1 for s in self.segments if not s.deleted and s.kind == LYRIC_KIND and s.text.strip())
+        if not messagebox.askyesno(APP_TITLE,
+            f"準備打包為 Premiere XML：\n\n"
+            f"音檔：{self.audio_path.name}\n"
+            f"影像軌：{img_count} 個\n"
+            f"歌詞標記：{lyric_count} 句\n\n"
+            f"按「是」選擇輸出位置並開始打包。"):
             return
         dest_dir = filedialog.askdirectory(title="選擇打包輸出位置")
         if not dest_dir:
@@ -4017,33 +4020,24 @@ class LyricsSrtApp(tk.Tk):
             if not messagebox.askyesno(APP_TITLE, f"資料夾已存在：\n{pkg}\n\n要覆蓋嗎？"):
                 return
 
-        active_segs = [s for s in self.segments if not s.deleted and s.kind == LYRIC_KIND and s.text.strip()]
-        all_segs    = copy.deepcopy(self.segments)
-        active_snap = copy.deepcopy(active_segs)
-        width, height    = PNG_ASPECTS[self.png_aspect_var.get()]
-        style            = self.png_animation_var.get()
-        subtitle_style   = self._current_subtitle_style(target_height=height)
-        img_clips        = list(self.image_clips)
-        audio_path       = self.audio_path
-        duration         = self.duration
+        all_segs  = copy.deepcopy(self.segments)
+        img_clips = list(self.image_clips)
+        audio_path = self.audio_path
+        duration   = self.duration
 
-        self._set_png_state("disabled")
-        self._set_progress_status("正在打包 Premiere 素材…（音檔、影像、字幕 PNG）", busy=True)
+        self._set_progress_status("正在打包 Premiere 素材…（音檔、影像）", busy=True)
         threading.Thread(
             target=self._run_bundle_export,
-            args=(pkg, audio_path, duration, all_segs, img_clips,
-                  active_snap, width, height, style, subtitle_style),
+            args=(pkg, audio_path, duration, all_segs, img_clips),
             daemon=True,
         ).start()
 
     def _run_bundle_export(self, pkg: Path, audio_path: Path, duration: float,
-                           all_segs, img_clips, active_snap,
-                           width: int, height: int, style: str, subtitle_style) -> None:
+                           all_segs, img_clips) -> None:
         import xml.etree.ElementTree as ET
         import shutil as _shutil
 
         def _url(p: Path) -> str:
-            # Path.as_uri() 自動處理 file:/// 前綴與非 ASCII 字元的 URL 編碼
             return p.as_uri()
 
         FPS = 30
@@ -4054,7 +4048,6 @@ class LyricsSrtApp(tk.Tk):
         try:
             audio_dir  = pkg / "audio"
             images_dir = pkg / "images"
-            png_dir    = pkg / f"subtitles_png_{width}x{height}_{FPS}fps"
             audio_dir.mkdir(parents=True, exist_ok=True)
             images_dir.mkdir(parents=True, exist_ok=True)
 
@@ -4076,18 +4069,6 @@ class LyricsSrtApp(tk.Tk):
                     dest_imgs.append(dst)
                 else:
                     dest_imgs.append(None)
-
-            # ── 產生字幕 PNG 序列（放在 package 裡，由使用者手動匯入 Premiere 為序列）
-            png_frames = 0
-            if active_snap:
-                png_dir.mkdir(parents=True, exist_ok=True)
-                from subtitle_png_renderer import render_sequence
-                png_frames = render_sequence(
-                    active_snap, audio_path, duration, png_dir,
-                    width, height, FPS,
-                    lambda text: self.events.put(("status", text)),
-                    style, subtitle_style,
-                )
 
             # ── 建立 FCP 7 XML (xmeml) ────────────────────────────────────────
             total_frames = _frames(duration)
@@ -4153,36 +4134,6 @@ class LyricsSrtApp(tk.Tk):
                         ET.SubElement(fi, "name").text = dst.name
                         ET.SubElement(fi, "pathurl").text = _url(dst)
 
-            # V2：字幕 PNG 序列（XML 保留路徑，Premiere 匯入後用 Link Media 接序列）
-            first_png = png_dir / "lyrics_000001.png"
-            if png_frames > 0 and first_png.exists():
-                track2 = ET.SubElement(video, "track")
-                ET.SubElement(track2, "enabled").text = "TRUE"
-                ET.SubElement(track2, "locked").text = "FALSE"
-                ci = ET.SubElement(track2, "clipitem", id="subtitle_seq")
-                ET.SubElement(ci, "name").text = "動態字幕"
-                ET.SubElement(ci, "duration").text = str(total_frames)
-                r2 = ET.SubElement(ci, "rate")
-                ET.SubElement(r2, "timebase").text = str(FPS)
-                ET.SubElement(r2, "ntsc").text = "FALSE"
-                ET.SubElement(ci, "start").text = "0"
-                ET.SubElement(ci, "end").text = str(total_frames)
-                ET.SubElement(ci, "in").text = "0"
-                ET.SubElement(ci, "out").text = str(total_frames)
-                ET.SubElement(ci, "enabled").text = "TRUE"
-                f2 = ET.SubElement(ci, "file", id="subtitle_png_file")
-                ET.SubElement(f2, "name").text = first_png.name
-                ET.SubElement(f2, "pathurl").text = _url(first_png)
-                r2f = ET.SubElement(f2, "rate")
-                ET.SubElement(r2f, "timebase").text = str(FPS)
-                ET.SubElement(r2f, "ntsc").text = "FALSE"
-                ET.SubElement(f2, "duration").text = str(total_frames)
-                fm2 = ET.SubElement(f2, "media")
-                fv2 = ET.SubElement(fm2, "video")
-                sc2 = ET.SubElement(fv2, "samplecharacteristics")
-                ET.SubElement(sc2, "width").text = str(width)
-                ET.SubElement(sc2, "height").text = str(height)
-
             # 音軌
             audio_el = ET.SubElement(media, "audio")
             if dest_audio and dest_audio.exists():
@@ -4219,7 +4170,7 @@ class LyricsSrtApp(tk.Tk):
                 fh.write('<!DOCTYPE xmeml>\n')
                 tree.write(fh, encoding="unicode", xml_declaration=False)
 
-            self.events.put(("bundle_done", (pkg, png_frames, len(img_clips))))
+            self.events.put(("bundle_done", (pkg, len(img_clips))))
         except Exception as exc:
             self.events.put(("bundle_error", str(exc)))
 
