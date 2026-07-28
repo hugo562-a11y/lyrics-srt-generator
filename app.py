@@ -568,7 +568,14 @@ class WaveformView(ttk.Frame):
         self._draw_waveform(width)
         self._draw_segments()
         self._draw_image_clips(width)
-        self.canvas.create_line(self._time_to_x(self.playhead), 0, self._time_to_x(self.playhead), height, fill=PLAYHEAD_COLOR, width=2, tags=("playhead",))
+        ph_x = self._time_to_x(self.playhead)
+        self.canvas.create_line(ph_x, 0, ph_x, height, fill=PLAYHEAD_COLOR, width=2, tags=("playhead",))
+        # 三角形拖曳把手（在時間尺頂端，比細線容易抓）
+        TW = 8
+        self.canvas.create_polygon(
+            ph_x - TW, 0, ph_x + TW, 0, ph_x, TW * 1.4,
+            fill=PLAYHEAD_COLOR, outline="#ffffff", width=1, tags=("playhead", "playhead_tri"),
+        )
 
     def _draw_ruler(self, width: int, height: int) -> None:
         self.canvas.create_rectangle(0, 0, width, self.RULER_H, fill=WAVE_RULER_BG, width=0)
@@ -696,20 +703,20 @@ class WaveformView(ttk.Frame):
         if y >= self.RULER_H + self.WAVE_H:
             self._press_image_track(x, y)
             return
-        # 點擊在播放頭附近 → 拖曳播放頭
-        ph_x = self._time_to_x(self.playhead)
-        if abs(x - ph_x) <= self.EDGE_GRAB_PX:
-            self._drag = {"type": "playhead"}
-            return
+        # 邊界 handle 優先
         handle = self._find_handle(x, y)
         if handle is not None:
             self._drag = {"index": handle[0], "edge": handle[1]}
             return
+        # 點在句子本體 → 選取＋啟動整體移動
         index = self._find_segment(x, y)
         if index is not None:
             self.on_select(index)
-        else:
-            self.on_seek(self._x_to_time(x))
+            seg = self.segments[index]
+            self._drag = {"type": "seg_body", "index": index,
+                          "orig_start": seg.start, "orig_end": seg.end, "grab_x": x}
+            return
+        self.on_seek(self._x_to_time(x))
 
     def _press_image_track(self, x: float, _y: float) -> None:
         # 邊緣 handle 優先
@@ -760,6 +767,9 @@ class WaveformView(ttk.Frame):
             return
         if self._drag.get("type") == "imgclip":
             self._drag_image_clip(x)
+            return
+        if self._drag.get("type") == "seg_body":
+            self._drag_segment_body(x)
             return
         t = self._x_to_time(x)
         index, edge = self._drag["index"], self._drag["edge"]
@@ -815,9 +825,36 @@ class WaveformView(ttk.Frame):
         self.canvas.coords(f"imghandle:{i}:start", x0, top, x0, bottom)
         self.canvas.coords(f"imghandle:{i}:end", x1, top, x1, bottom)
 
+    def _drag_segment_body(self, canvas_x: float) -> None:
+        drag = self._drag
+        i = drag["index"]
+        if not (0 <= i < len(self.segments)):
+            return
+        t = self._x_to_time(canvas_x)
+        t_grab = self._x_to_time(drag["grab_x"])
+        dt = t - t_grab
+        orig_s, orig_e = drag["orig_start"], drag["orig_end"]
+        dur = orig_e - orig_s
+        new_s = max(0.0, min(self.duration - dur, orig_s + dt))
+        new_e = new_s + dur
+        drag["preview_start"] = new_s
+        drag["preview_end"] = new_e
+        top, bottom = self.RULER_H, self.RULER_H + self.WAVE_H
+        x0 = self._time_to_x(new_s)
+        x1 = self._time_to_x(new_e)
+        mid = (x0 + x1) / 2
+        rect = next(iter(self.canvas.find_withtag(f"seg:{i}")), None)
+        if rect:
+            self.canvas.coords(rect, min(x0 + self.GAP_PX, mid), top, max(x1 - self.GAP_PX, mid), bottom)
+        self.canvas.coords(f"handle:{i}:start", x0, top, x0, bottom)
+        self.canvas.coords(f"handle:{i}:end", x1, top, x1, bottom)
+
     def _on_release(self, _event: tk.Event) -> None:
         if self._drag:
-            if self._drag.get("type") == "imgclip" and "preview_start" in self._drag:
+            if self._drag.get("type") == "seg_body" and "preview_start" in self._drag:
+                self.on_edit(self._drag["index"], "body",
+                             (self._drag["preview_start"], self._drag["preview_end"]))
+            elif self._drag.get("type") == "imgclip" and "preview_start" in self._drag:
                 i = self._drag["index"]
                 if 0 <= i < len(self.image_clips):
                     self.image_clips[i].start = self._drag["preview_start"]
@@ -2826,12 +2863,16 @@ class LyricsSrtApp(tk.Tk):
             f.write("\n".join(lines))
         messagebox.showinfo(APP_TITLE, f"分鏡表已儲存：{path}")
 
-    def _waveform_edit(self, index: int, edge: str, value: float) -> None:
+    def _waveform_edit(self, index: int, edge: str, value) -> None:
         if not (0 <= index < len(self.segments)):
             return
         self.push_undo("拖曳調整時間")
         segment = self.segments[index]
-        if edge == "start":
+        if edge == "body":
+            new_s, new_e = value
+            segment.start = max(0.0, new_s)
+            segment.end = min(self.duration, new_e)
+        elif edge == "start":
             segment.start = max(0.0, value)
         else:
             segment.end = min(self.duration, value)
